@@ -58,6 +58,23 @@ function parseLrc(lrcText) {
 }
 
 // ── 動画情報の取得 ─────────────────────────────────────────────
+function getVideoDescription() {
+  // 概要欄を可能な範囲で取得（クレジット表記抽出に使う）
+  const selectors = [
+    '#description-inline-expander yt-attributed-string',
+    'ytd-text-inline-expander yt-attributed-string',
+    '#description yt-formatted-string',
+    '#description-inline-expander',
+    '#description',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    const text = el?.textContent?.trim() || '';
+    if (text.length >= 20) return text.slice(0, 2000);
+  }
+  return '';
+}
+
 function getVideoInfo() {
   const titleEl = document.querySelector('h1.ytd-watch-metadata yt-formatted-string, h1.style-scope.ytd-watch-metadata');
   const channelEl = document.querySelector('ytd-channel-name yt-formatted-string a, #channel-name a');
@@ -66,125 +83,179 @@ function getVideoInfo() {
     title: titleEl?.textContent?.trim() || '',
     artist: channelEl?.textContent?.trim() || '',
     duration: videoEl?.duration || 0,
+    description: getVideoDescription(),
   };
 }
 
-// ── タイトルから検索候補を生成 ────────────────────────────────
-// "Artist - Track (Official)"、"Track / Artist"、"Track feat. X" 等に対応
-function buildSearchCandidates(rawTitle, channelArtist) {
-  // YouTube Music の "Artist - Topic" サフィックスを除去
+// ── タイトル/概要欄から検索候補を生成（信頼度スコア付き）──────
+// 戻り値: [{ trackName, artistName, confidence: 1-5 }, ...]
+//   5 = 確信（説明欄明示クレジット）
+//   4 = 高（「」鉤括弧 or 区切り+チャンネル名一致）
+//   3 = 中高（区切りで一方向のみチャンネル一致）
+//   2 = 中（区切りあり・方向不明）
+//   1 = 低（フォールバック）
+function buildSearchCandidates(rawTitle, channelArtist, description = '') {
+  // ── チャンネル名の正規化（公式/Records/Music 等を除去 + 区切り分割）──
   const ch = channelArtist.replace(/\s*[-–—]\s*Topic$/i, '').trim();
 
-  // ── クリーニング ─────────────────────────────────────────────
+  const stripChSuffix = (s) => s
+    .replace(/\s*[【\(\[]?\s*(?:公式|オフィシャル|Official|OFFICIAL)(?:\s+(?:Channel|チャンネル))?\s*[】\)\]]?\s*$/i, '')
+    .replace(/\s+(?:Music|Records|Channel|Ch\.?)\s*$/i, '')
+    .trim();
+
+  const chClean = stripChSuffix(ch);
+  // "なとり / natori" → ["なとり", "natori"] のように分割
+  const chParts = ch.split(/[\/／\|｜　・]+/).map(s => stripChSuffix(s.trim())).filter(Boolean);
+  const allChNames = [...new Set([ch, chClean, ...chParts])].filter(s => s.length >= 2);
+
+  // ── ノイズ除去 ──
   const clean = (s) => s
-    // 括弧・鉤括弧（「『〔〈《】含む）の内容を除去
     .replace(/\s*[(\[（【〔〈《「『][^)\]）】〕〉》」』]*[)\]）】〕〉》」』]\s*/g, ' ')
-    // ダッシュ + ノイズワード（- Official Music Video 等）
     .replace(/\s*[-–—]\s*(?:official\s+(?:music\s+video|lyric\s+video|mv|pv|audio|video)|music\s+video|lyric\s+video|mv|pv|audio|video)(?:\s|$)/gi, ' ')
-    // 単独ノイズワード（スペース区切り）
     .replace(/\s+(?:official\s+(?:music\s+video|lyric\s+video|mv|pv|audio|video)|music\s+video|lyric\s+video|official|mv|pv)\s*/gi, ' ')
-    // トラック番号プレフィックス（"01. " "M1. " 等）
     .replace(/^[A-Z]?\d+[.\s]+/, '')
-    // 末尾に残った孤立した区切り記号
     .replace(/\s*[-–—|｜\/／]\s*$/, '')
     .replace(/\s+/g, ' ').trim();
 
-  // feat./ft./with 以降を除去
-  const stripFeat = (s) => s.replace(/\s+(?:feat\.?|ft\.?)\s+.+$/i, '').trim();
+  const stripFeat = (s) => s.replace(/\s+(?:feat\.?|ft\.?|with)\s+.+$/i, '').trim();
 
-  // ── 重複なし追加 ────────────────────────────────────────────
-  const candidates = [];
-  const seen = new Set();
-  const add = (track, artist) => {
-    track = track.trim(); artist = artist.trim();
-    if (!track || track === artist) return;
-    const key = `${track}|${artist}`;
-    if (!seen.has(key)) { seen.add(key); candidates.push({ trackName: track, artistName: artist }); }
-  };
-
-  // 左右を両方向 + feat.除去版で一括追加
-  // left がチャンネル名と一致・前方一致する場合は right がtrack名と判断して逆方向を優先
+  // 文字列が任意のチャンネル名バリエーションと一致 or 前方一致
   const matchesCh = (s) => {
-    const sl = s.toLowerCase();
-    const chL = ch.toLowerCase();
-    return sl === chL || chL.startsWith(sl + ' ') || chL.startsWith(sl + '/') || chL.startsWith(sl + '　');
+    const sl = (s || '').toLowerCase().trim();
+    if (!sl || sl.length < 2) return false;
+    return allChNames.some(c => {
+      const cl = c.toLowerCase();
+      return sl === cl ||
+             cl.startsWith(sl + ' ') || cl.startsWith(sl + '/') || cl.startsWith(sl + '　') || cl.startsWith(sl + '・') ||
+             sl.startsWith(cl + ' ') || sl.startsWith(cl + '/');
+    });
   };
-  const tryBothDirs = (left, right) => {
+
+  // ── 候補リスト（信頼度マップ）──
+  const candidates = [];
+  const seen = new Map();
+  const add = (track, artist, conf = 2) => {
+    track = (track || '').trim();
+    artist = (artist || '').trim();
+    if (!track || track === artist) return;
+    if (/^(?:mv|pv|music\s*video|official|audio|lyric\s*video)$/i.test(track)) return;
+    const key = `${track.toLowerCase()}|${artist.toLowerCase()}`;
+    if (seen.has(key)) {
+      const existing = seen.get(key);
+      if (conf > existing.confidence) existing.confidence = conf;
+      return;
+    }
+    const entry = { trackName: track, artistName: artist, confidence: conf };
+    seen.set(key, entry);
+    candidates.push(entry);
+  };
+
+  const tryBothDirs = (left, right, baseConf = 2) => {
     if (!left || !right) return;
-    const cl = clean(left).toLowerCase();
-    const cr = clean(right).toLowerCase();
-    const chL = ch.toLowerCase();
+    const cl = clean(left);
+    const cr = clean(right);
     const leftMatchesCh = matchesCh(cl);
     const rightMatchesCh = matchesCh(cr);
     if (leftMatchesCh && !rightMatchesCh) {
-      // left=artist, right=track → 正しい方向を先頭に
-      add(right, left); add(right, ch);
-      add(left, right); add(stripFeat(left), right); add(left, ch);
+      // left=artist 確定 → right=track 高信頼
+      add(cr, left, baseConf + 2);
+      add(cr, ch, baseConf + 2);
+      add(stripFeat(cr), left, baseConf + 2);
+    } else if (rightMatchesCh && !leftMatchesCh) {
+      // right=artist 確定 → left=track 高信頼
+      add(cl, right, baseConf + 2);
+      add(cl, ch, baseConf + 2);
+      add(stripFeat(cl), right, baseConf + 2);
     } else {
-      add(left, right);           add(stripFeat(left), right);
-      add(left, ch);              add(stripFeat(left), ch);
-      if (cr !== chL) {
-        add(right, left);
-        add(right, ch);
-      }
+      // 方向不明 → 両方向で中信頼
+      add(cl, cr, baseConf);
+      add(stripFeat(cl), cr, baseConf);
+      add(cl, ch, baseConf);
+      add(cr, cl, baseConf);
+      add(cr, ch, baseConf);
     }
   };
 
-  const base       = clean(rawTitle);
+  const base = clean(rawTitle);
   const baseNoFeat = stripFeat(base);
 
-  // ── A: 鉤括弧「」『』の中が曲名（最優先）────────────────────
-  // 例: "Artist「Track」" / "「Track」/ Artist" / "「Track」(MV)"
+  // ── A: 鉤括弧「」『』 = 高信頼度 track ──
   const bracketM = rawTitle.match(/[「『](.+?)[」』]/);
   if (bracketM) {
     const track = bracketM[1].trim();
     const idx = rawTitle.indexOf(bracketM[0]);
     const rawBefore = rawTitle.slice(0, idx).replace(/\s*[-–—\/｜|]\s*$/, '').trim();
-    const rawAfter  = rawTitle.slice(idx + bracketM[0].length).replace(/^\s*[-–—\/｜|]\s*/, '').trim();
+    const rawAfter = rawTitle.slice(idx + bracketM[0].length).replace(/^\s*[-–—\/｜|]\s*/, '').trim();
     const artistBefore = rawBefore ? clean(rawBefore) : '';
-    const artistAfter  = rawAfter  ? clean(rawAfter)  : '';
-    const bestArtist   = artistBefore || artistAfter || ch;
-    add(track, bestArtist);
-    add(track, ch);
-    add(stripFeat(track), bestArtist);
+    const artistAfter = rawAfter ? clean(rawAfter) : '';
+    const bestArtist = artistBefore || artistAfter || ch;
+    // チャンネル名一致 → 最高確信度4
+    const conf = (matchesCh(bestArtist) || matchesCh(artistBefore) || matchesCh(artistAfter)) ? 4 : 4;
+    add(track, bestArtist, conf);
+    add(track, ch, conf);
+    add(stripFeat(track), bestArtist, conf);
   }
 
-  // ── B: ダッシュ [-–—] 区切り（両方向 + 3分割対応）───────────
-  // 例: "Track - Artist MV" / "Artist - Track" / "Label - Artist - Track"
+  // ── B: ダッシュ [-–—] 区切り ──
   const dashParts = base.split(/\s[-–—]\s/).map(s => s.trim()).filter(Boolean);
   if (dashParts.length >= 2) {
-    tryBothDirs(dashParts[0], dashParts[dashParts.length - 1]);
+    tryBothDirs(dashParts[0], dashParts[dashParts.length - 1], 2);
     if (dashParts.length >= 3) {
-      add(dashParts[1], dashParts[0]);
-      add(dashParts[1], dashParts[dashParts.length - 1]);
-      add(dashParts[1], ch);
+      add(dashParts[1], dashParts[0], 2);
+      add(dashParts[1], dashParts[dashParts.length - 1], 2);
+      add(dashParts[1], ch, 2);
     }
   }
 
-  // ── C: スラッシュ [/／] 区切り ──────────────────────────────
-  // 例: "Track / Artist" / "Artist / Track"
+  // ── C: スラッシュ [/／] 区切り ──
   const slashParts = base.split(/\s*[\/／]\s*/).map(s => s.trim()).filter(Boolean);
-  if (slashParts.length === 2) {
-    tryBothDirs(slashParts[0], slashParts[1]);
-  }
+  if (slashParts.length === 2) tryBothDirs(slashParts[0], slashParts[1], 2);
 
-  // ── D: パイプ [|｜] 区切り ───────────────────────────────────
+  // ── D: パイプ [|｜] 区切り ──
   const pipeParts = base.split(/\s*[|｜]\s*/).map(s => s.trim()).filter(Boolean);
-  if (pipeParts.length === 2) {
-    tryBothDirs(pipeParts[0], pipeParts[1]);
-  }
+  if (pipeParts.length === 2) tryBothDirs(pipeParts[0], pipeParts[1], 2);
 
-  // ── E: 全角コロン [：] 区切り ────────────────────────────────
+  // ── E: 全角コロン [：] 区切り ──
   const colonParts = base.split(/\s*：\s*/).map(s => s.trim()).filter(Boolean);
-  if (colonParts.length === 2) {
-    tryBothDirs(colonParts[0], colonParts[1]);
+  if (colonParts.length === 2) tryBothDirs(colonParts[0], colonParts[1], 2);
+
+  // ── F: フォールバック（タイトル全体）──
+  add(base, ch, 1);
+  if (baseNoFeat !== base) add(baseNoFeat, ch, 1);
+
+  // ── G: 動画概要欄の明示クレジット（最高信頼度5）──
+  if (description) {
+    const grabLine = (labels) => {
+      const re = new RegExp(`(?:^|\\n)\\s*[【\\[]?(?:${labels})[】\\]]?\\s*[:：]\\s*([^\\n]+)`, 'i');
+      const m = description.match(re);
+      if (!m) return '';
+      return m[1]
+        .replace(/[（(].*?[）)]/g, '')
+        .replace(/\s+\/\s+.+$/, '')
+        .trim()
+        .slice(0, 50);
+    };
+    const descArtist = grabLine('歌|Vocal|Vo\\.?|Singer|Artist|アーティスト|歌唱');
+    const descTrack = grabLine('曲名|曲|Track|Title|タイトル|楽曲');
+    if (descArtist && descTrack) {
+      add(descTrack, descArtist, 5);
+    } else if (descArtist) {
+      // 説明欄アーティストを既存 trackName 候補に組み合わせて高信頼度化
+      const existingTracks = [...new Set(candidates.map(c => c.trackName))];
+      for (const t of existingTracks.slice(0, 3)) add(t, descArtist, 4);
+      add(base, descArtist, 3);
+    } else if (descTrack) {
+      add(descTrack, ch, 4);
+    }
+    // 概要欄の『曲名』『楽曲名』パターン（クレジット表記なしバージョン）
+    const descBracketM = description.match(/[『「]([^」』\n]{2,40})[』」]/);
+    if (descBracketM && !descTrack) {
+      add(descBracketM[1].trim(), descArtist || ch, descArtist ? 4 : 3);
+    }
   }
 
-  // ── F: セパレータなし（最後のフォールバック）──────────────────
-  // 例: タイトル全体が曲名でチャンネル名がアーティスト
-  add(base, ch);
-  if (baseNoFeat !== base) add(baseNoFeat, ch);
-
+  // ── 信頼度順にソート ──
+  candidates.sort((a, b) => b.confidence - a.confidence);
   return candidates;
 }
 
@@ -198,7 +269,7 @@ function buildSearchCandidates(rawTitle, channelArtist) {
 //   Stage 3: /get 曲名のみ — アーティスト名なしで一致を試みる
 //   Stage 4: 生タイトル /search — ノイズ込みでも拾える最終手段
 //
-async function fetchLyrics(title, artist, duration) {
+async function fetchLyrics(title, artist, duration, description = '') {
   function extract(data) {
     if (!data) return null;
     const meta = { lrclibTrack: data.trackName || '', lrclibArtist: data.artistName || '', lrclibDuration: data.duration };
@@ -261,15 +332,15 @@ async function fetchLyrics(title, artist, duration) {
     return score;
   }
 
-  const candidates = buildSearchCandidates(title, artist);
-  console.log('[YTL] 検索候補:', candidates.map((c, i) => `${i+1}. "${c.trackName}" / "${c.artistName}"`).join('\n'));
+  const candidates = buildSearchCandidates(title, artist, description);
+  console.log('[YTL] 検索候補:', candidates.map((c, i) => `${i+1}. [c${c.confidence}] "${c.trackName}" / "${c.artistName}"`).join('\n'));
   if (!candidates.length) return null;
 
   // ── API呼び出しを最小化する仕組み ──
   const triedGet = new Set();
   const triedSearch = new Set();
   let apiCalls = 0;
-  const pool = []; // 累積プール（最終段で再評価）
+  const pool = [];
 
   const callGet = async (track, art, useDur) => {
     const params = new URLSearchParams({ track_name: track, artist_name: art });
@@ -286,7 +357,7 @@ async function fetchLyrics(title, artist, duration) {
   };
 
   const callSearch = async (q) => {
-    if (triedSearch.has(q)) return [];
+    if (!q || triedSearch.has(q)) return [];
     triedSearch.add(q);
     apiCalls++;
     try {
@@ -300,72 +371,82 @@ async function fetchLyrics(title, artist, duration) {
   };
 
   const primary = candidates[0];
+  const isHighConf = primary.confidence >= 4;
 
-  // ── Stage 1: /get + duration（最高精度・1呼び出し）──
-  let hit = await callGet(primary.trackName, primary.artistName, true);
-  if (hit) {
-    const s = scoreHit(hit, primary);
-    if (s >= 4) {
-      console.log(`[YTL] Stage1 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
-      return hit;
-    }
-    pool.push({ hit, src: 'get+dur', score: s });
+  // ── Stage 1: /search 曲名のみ（最も命中率が高い・1呼び出し）──
+  // ユーザー洞察: lrclib の /search は曲名単体の方がヒットしやすい
+  // 候補のアーティスト名は scoreHit で検証だけして、クエリには含めない
+  let hits = await callSearch(primary.trackName);
+  let scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `s(${primary.trackName})` }));
+  scored.sort((a, b) => b.score - a.score);
+  if (scored[0] && scored[0].score >= 4) {
+    console.log(`[YTL] Stage1 即決 score=${scored[0].score.toFixed(1)} → ${scored[0].hit.lrclibTrack} / ${scored[0].hit.lrclibArtist} (calls=${apiCalls})`);
+    return scored[0].hit;
   }
+  scored.forEach(s => pool.push(s));
 
-  // ── Stage 2: /get without duration（version 違い救済・1呼び出し）──
-  if (duration > 0) {
-    hit = await callGet(primary.trackName, primary.artistName, false);
+  // ── Stage 2: 高信頼度時は /get で精密一致を試す（1-2呼び出し）──
+  if (isHighConf && primary.artistName) {
+    let hit = await callGet(primary.trackName, primary.artistName, true);
     if (hit) {
       const s = scoreHit(hit, primary);
       if (s >= 4) {
         console.log(`[YTL] Stage2 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
         return hit;
       }
-      pool.push({ hit, src: 'get', score: s });
+      pool.push({ hit, src: 'get+dur', score: s });
     }
-  }
-
-  // ── Stage 3: /search "曲名 アーティスト"（top5評価・1呼び出し）──
-  const q1 = primary.artistName ? `${primary.trackName} ${primary.artistName}` : primary.trackName;
-  let hits = await callSearch(q1);
-  let scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `search(${q1})` }));
-  scored.sort((a, b) => b.score - a.score);
-  if (scored[0] && scored[0].score >= 4) {
-    console.log(`[YTL] Stage3 即決 score=${scored[0].score.toFixed(1)} q="${q1}" (calls=${apiCalls})`);
-    return scored[0].hit;
-  }
-  scored.forEach(s => pool.push(s));
-
-  // ── Stage 4: 残り候補を順次 /get（強マッチ即終了・最大2回）──
-  for (const c of candidates.slice(1, 3)) {
-    hit = await callGet(c.trackName, c.artistName, false);
-    if (hit) {
-      const s = scoreHit(hit, c);
-      if (s >= 5) {
-        console.log(`[YTL] Stage4 即決 score=${s.toFixed(1)} "${c.trackName}" (calls=${apiCalls})`);
-        return hit;
+    if (duration > 0) {
+      hit = await callGet(primary.trackName, primary.artistName, false);
+      if (hit) {
+        const s = scoreHit(hit, primary);
+        if (s >= 4) {
+          console.log(`[YTL] Stage2b 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
+          return hit;
+        }
+        pool.push({ hit, src: 'get', score: s });
       }
-      pool.push({ hit, src: `get(${c.trackName})`, score: scoreHit(hit, primary) });
     }
+  }
+
+  // ── Stage 3: 別 trackName 候補で /search（最大2つ）──
+  const otherTracks = [...new Set(
+    candidates.slice(1).map(c => c.trackName)
+  )].filter(t => t && t !== primary.trackName).slice(0, 2);
+  for (const trackName of otherTracks) {
+    hits = await callSearch(trackName);
+    const cand = candidates.find(c => c.trackName === trackName) || primary;
+    scored = hits.map(h => ({ hit: h, score: scoreHit(h, cand), src: `s(${trackName})` }));
+    scored.sort((a, b) => b.score - a.score);
+    if (scored[0] && scored[0].score >= 5) {
+      console.log(`[YTL] Stage3 即決 score=${scored[0].score.toFixed(1)} "${trackName}" (calls=${apiCalls})`);
+      return scored[0].hit;
+    }
+    // primary 視点でも再評価してプールへ
+    scored.forEach(s => pool.push({ ...s, score: scoreHit(s.hit, primary) }));
+  }
+
+  // ── Stage 4: low-confidence なら "track artist" 結合検索 ──
+  if (!isHighConf && primary.artistName) {
+    const q = `${primary.trackName} ${primary.artistName}`;
+    hits = await callSearch(q);
+    scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `s(${q})` }));
+    scored.sort((a, b) => b.score - a.score);
+    if (scored[0] && scored[0].score >= 4) {
+      console.log(`[YTL] Stage4 即決 score=${scored[0].score.toFixed(1)} q="${q}" (calls=${apiCalls})`);
+      return scored[0].hit;
+    }
+    scored.forEach(s => pool.push(s));
   }
 
   // ── Stage 5: 累積プールから最良採用（API呼び出しなし）──
   pool.sort((a, b) => b.score - a.score);
   if (pool[0] && pool[0].score >= 3) {
-    console.log(`[YTL] Stage5 累積ベスト score=${pool[0].score.toFixed(1)} src=${pool[0].src} (calls=${apiCalls})`);
+    console.log(`[YTL] Stage5 累積ベスト score=${pool[0].score.toFixed(1)} src=${pool[0].src} → ${pool[0].hit.lrclibTrack} / ${pool[0].hit.lrclibArtist} (calls=${apiCalls})`);
     return pool[0].hit;
   }
 
-  // ── Stage 6: /search 曲名のみ（最終救済・1呼び出し）──
-  hits = await callSearch(primary.trackName);
-  scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary) }));
-  scored.sort((a, b) => b.score - a.score);
-  if (scored[0] && scored[0].score >= 2) {
-    console.log(`[YTL] Stage6 救済 score=${scored[0].score.toFixed(1)} (calls=${apiCalls})`);
-    return scored[0].hit;
-  }
-
-  // 累積プールから低スコアでも採用（最後の手段）
+  // ── Stage 6: 低スコアでも採用（最後の救済）──
   if (pool[0] && pool[0].score >= 1) {
     console.log(`[YTL] 低スコア採用 score=${pool[0].score.toFixed(1)} (calls=${apiCalls})`);
     return pool[0].hit;
@@ -379,7 +460,7 @@ async function fetchLyrics(title, artist, duration) {
 const lyricsCache = new Map(); // videoId → result | null（フェッチ中）
 const CACHE_KEY = 'ytl_lyrics_cache';
 const CACHE_VER_KEY = 'ytl_cache_ver';
-const CACHE_VERSION = '7'; // 検索ロジック変更時に上げるとキャッシュ自動クリア
+const CACHE_VERSION = '8'; // 検索ロジック変更時に上げるとキャッシュ自動クリア
 
 function saveCache() {
   try {
@@ -755,14 +836,14 @@ async function loadLyrics() {
   // タイトル確定 & kuromoji 初期化を並列実行
   await Promise.all([waitForTitle(), initKuromoji()]);
 
-  const { title, artist, duration } = getVideoInfo();
+  const { title, artist, duration, description } = getVideoInfo();
   if (!title) { setStatus(panel, '動画情報を取得できませんでした'); return; }
   panel.querySelector('.ytl-title').textContent = title.length > 30 ? title.slice(0, 28) + '…' : title;
 
   // キャッシュ確認（先読みで取得済みならそのまま使用）
   let result = lyricsCache.get(videoId);
   if (result === undefined) {
-    result = await fetchLyrics(title, artist, duration);
+    result = await fetchLyrics(title, artist, duration, description);
   }
   lyricsCache.set(videoId, result);
   saveCache();
