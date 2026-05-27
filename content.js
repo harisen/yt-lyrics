@@ -492,6 +492,7 @@ function createPanel() {
   closeBtn.addEventListener('click', () => {
     panel.remove();
     clearInterval(syncTimer);
+    tapSyncMode = false;
     if (focusMode) { focusMode = false; document.querySelector('ytd-watch-flexy')?.classList.remove('ytl-focus'); }
   });
   const searchBtn = mk('button', 'ytl-search-btn', '🔍');
@@ -664,15 +665,18 @@ async function loadLyrics() {
   clearInterval(syncTimer);
   lrcLines = [];
   window.__ytlOffset = 0;
+  tapSyncMode = false;
 
   let panel = document.getElementById(PANEL_ID);
   if (!panel) {
     panel = createPanel();
     if (!injectPanel(panel)) { setTimeout(loadLyrics, 1500); currentVideoId = null; return; }
   } else {
-    // 既存パネルのオフセットラベルをリセット
+    // 既存パネルのオフセットラベルとモード状態をリセット
     const lbl = panel.querySelector('.ytl-offset-label');
     if (lbl) lbl.textContent = 'オフセット: 0.0s';
+    panel.classList.remove('ytl-tapsync');
+    panel.querySelector('.ytl-tapsync-btn')?.classList.remove('active');
   }
 
   setStatus(panel, '歌詞を読み込み中...');
@@ -1049,7 +1053,8 @@ async function performManualSearch(panel, query) {
       const row = mk('div', 'ytl-search-result');
       const hasSynced = !!item.syncedLyrics;
       const badge = mk('span', `ytl-search-badge ${hasSynced ? 'synced' : 'plain'}`, hasSynced ? '同期' : '歌詞');
-      const name = mk('span', 'ytl-search-name', `${item.trackName} — ${item.artistName}`);
+      const display = [item.trackName, item.artistName].filter(Boolean).join(' — ');
+      const name = mk('span', 'ytl-search-name', display || '(タイトル不明)');
       row.append(badge, name);
       row.addEventListener('click', () => loadManualResult(panel, item));
       resultsEl.appendChild(row);
@@ -1067,6 +1072,12 @@ function loadManualResult(panel, item) {
 
   clearInterval(syncTimer);
   lrcLines = [];
+
+  // 別曲を手動選択した場合は前曲の自動補正値を破棄
+  window.__ytlOffset = 0;
+  if (videoId) { try { localStorage.removeItem(OFFSET_KEY_PREFIX + videoId); } catch (_) {} }
+  const lbl = panel.querySelector('.ytl-offset-label');
+  if (lbl) lbl.textContent = 'オフセット: 0.0s';
 
   const hit = {
     lrc: item.syncedLyrics || null,
@@ -1108,7 +1119,7 @@ function setupNavigationObserver() {
         loadLyrics();
       } else {
         clearInterval(syncTimer);
-        lrcLines = []; currentVideoId = null; focusMode = false; window.__ytlOffset = 0;
+        lrcLines = []; currentVideoId = null; focusMode = false; tapSyncMode = false; window.__ytlOffset = 0;
         flexy.classList.remove('ytl-focus');
         document.getElementById(PANEL_ID)?.remove();
       }
