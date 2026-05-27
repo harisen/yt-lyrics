@@ -662,7 +662,7 @@ function createPanel() {
     tapSyncMode = !tapSyncMode;
     tapSyncBtn.classList.toggle('active', tapSyncMode);
     panel.classList.toggle('ytl-tapsync', tapSyncMode);
-    tapSyncLabel.textContent = tapSyncMode ? '歌詞行をクリック...' : 'タップして歌詞を合わせる';
+    tapSyncLabel.textContent = tapSyncMode ? '動画を歌い出しに合わせて歌詞行をクリック…' : 'タップして歌詞を合わせる';
   });
 
   // オフセット表示 + 微調整 0.1
