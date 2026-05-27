@@ -552,25 +552,132 @@ function katakanaToHiragana(str) {
   return str.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
 }
 
+// ── kuromoji 未収録漢字のフォールバック読み（一文字単位の代表訓読み）──
+const KANJI_FALLBACK = {
+  // 自然・気象
+  '雫': 'しずく', '霙': 'みぞれ', '霰': 'あられ', '雹': 'ひょう',
+  '靄': 'もや', '霞': 'かすみ', '霧': 'きり', '凪': 'なぎ',
+  '蒼': 'あお', '碧': 'みどり', '茜': 'あかね', '瑠': 'る', '璃': 'り',
+  '宵': 'よい', '暁': 'あかつき', '黎': 'れい', '蝕': 'むしば',
+  // 動植物
+  '翅': 'はね', '蝶': 'ちょう', '蝉': 'せみ', '蛍': 'ほたる',
+  '蜂': 'はち', '蜘': 'く', '蛛': 'も',
+  '燕': 'つばめ', '鴎': 'かもめ', '雀': 'すずめ', '鷹': 'たか',
+  '鷲': 'わし', '鶴': 'つる', '鷺': 'さぎ', '梟': 'ふくろう',
+  '雛': 'ひな', '鳩': 'はと', '鴉': 'からす',
+  '楓': 'かえで', '椛': 'もみじ', '苺': 'いちご', '蕾': 'つぼみ',
+  '茨': 'いばら', '薔': 'ば', '薇': 'ら', '葵': 'あおい',
+  '菫': 'すみれ', '蓮': 'はす', '藤': 'ふじ', '柊': 'ひいらぎ',
+  '榊': 'さかき',
+  '兎': 'うさぎ', '狸': 'たぬき', '狐': 'きつね', '鼠': 'ねずみ',
+  '猪': 'いのしし', '狼': 'おおかみ',
+  '蟹': 'かに', '蛸': 'たこ', '鯨': 'くじら',
+  // 身体
+  '頬': 'ほお', '頰': 'ほお', '瞼': 'まぶた', '瞳': 'ひとみ',
+  '睫': 'まつげ', '掌': 'てのひら', '踵': 'かかと', '臍': 'へそ',
+  '顎': 'あご', '頷': 'うなず', '抓': 'つね',
+  // 感情・動作
+  '叫': 'さけ', '哭': 'な', '呟': 'つぶや', '囁': 'ささや', '喘': 'あえ',
+  '撫': 'な', '掴': 'つか', '掻': 'か', '抱': 'だ',
+  '繋': 'つな', '紡': 'つむ', '縫': 'ぬ', '織': 'お', '齎': 'もたら',
+  '滲': 'にじ', '溢': 'あふ', '渦': 'うず', '凍': 'こお',
+  '焔': 'ほむら', '焚': 'た', '燻': 'くす', '焦': 'こ',
+  '彷': 'さまよ', '徨': 'さまよ', '佇': 'たたず',
+  '蹲': 'うずくま', '蘇': 'よみがえ', '甦': 'よみがえ', '醒': 'さ',
+  '覗': 'のぞ', '攫': 'さら', '弄': 'もてあそ',
+  '揺': 'ゆ', '揚': 'あ', '挑': 'いど', '掬': 'すく',
+  '瞠': 'みは', '眺': 'なが',
+  '昇': 'のぼ', '翔': 'と', '翳': 'かざ', '舞': 'ま',
+  '謳': 'うた', '吟': 'ぎん', '謡': 'うた',
+  // 古語・文語
+  '哀': 'あわ', '愁': 'うれ', '糺': 'ただ',
+  '稀': 'まれ', '徒': 'いたずら', '殆': 'ほとん',
+  '只': 'ただ', '尚': 'なお', '仄': 'ほの',
+};
+
+// ── 文脈依存の読み補正（kuromojiが誤読する口語表記）──
+// 表記例: 失くす → kuromojiは「失」を「シツ」と読むが、後続が「く」系なら「な」に補正
+const READING_FIXES = [
+  // 失くす系（casual form for なくす）
+  { kanji: '失', nextRegex: /^く/, reading: 'ナ' },
+  // 出来る系（kuromojiは「出」を「シュツ」と読むことがある）
+  { kanji: '出', nextRegex: /^来/, reading: 'デ' },
+];
+
+// 漢字の読みが「自分自身を含む」誤読を検出（例: 失=シツ → カナ化失敗時の保険）
+function readingLooksWrong(surface, reading) {
+  if (!reading || reading === '*') return true;
+  if (reading === surface) return true;
+  if (/[一-鿿㐀-䶿]/.test(reading)) return true; // 読みに漢字が含まれている
+  return false;
+}
+
+// UNK surface を文字単位で分解し、漢字には fallback 読みを割り当てる
+function splitForFallback(surface) {
+  const segments = [];
+  for (const c of surface) {
+    const isKanji = /[一-鿿㐀-䶿]/.test(c);
+    if (isKanji) {
+      segments.push({ text: c, reading: KANJI_FALLBACK[c] || null });
+    } else {
+      const last = segments[segments.length - 1];
+      if (last && !last.reading && !/[一-鿿㐀-䶿]/.test(last.text)) {
+        last.text += c;
+      } else {
+        segments.push({ text: c, reading: null });
+      }
+    }
+  }
+  return segments;
+}
+
+function makeRubyNode(surface, reading) {
+  const ruby = document.createElement('ruby');
+  ruby.appendChild(document.createTextNode(surface));
+  const rt = document.createElement('rt');
+  rt.textContent = reading;
+  ruby.appendChild(rt);
+  return ruby;
+}
+
 function buildRubyNode(text) {
   if (!tokenizer || !rubyEnabled) return document.createTextNode(text);
   const tokens = tokenizer.tokenize(text);
   const span = document.createElement('span');
-  tokens.forEach(token => {
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
     const surface = token.surface_form;
-    const reading = token.reading;
+    let reading = token.reading;
     const hasKanji = /[一-鿿㐀-䶿]/.test(surface);
-    if (hasKanji && reading) {
-      const ruby = document.createElement('ruby');
-      ruby.appendChild(document.createTextNode(surface));
-      const rt = document.createElement('rt');
-      rt.textContent = katakanaToHiragana(reading);
-      ruby.appendChild(rt);
-      span.appendChild(ruby);
-    } else {
+
+    if (!hasKanji) {
       span.appendChild(document.createTextNode(surface));
+      continue;
     }
-  });
+
+    // ── 文脈依存の読み補正 ──
+    const next = tokens[i + 1];
+    for (const fix of READING_FIXES) {
+      if (surface === fix.kanji && next?.surface_form && fix.nextRegex.test(next.surface_form)) {
+        reading = fix.reading;
+        break;
+      }
+    }
+
+    // ── kuromojiが正しい読みを返した場合 ──
+    if (!readingLooksWrong(surface, reading)) {
+      span.appendChild(makeRubyNode(surface, katakanaToHiragana(reading)));
+      continue;
+    }
+
+    // ── 読みが無効 → 文字単位でフォールバック ──
+    const segments = splitForFallback(surface);
+    for (const seg of segments) {
+      if (seg.reading) span.appendChild(makeRubyNode(seg.text, seg.reading));
+      else span.appendChild(document.createTextNode(seg.text));
+    }
+  }
   return span;
 }
 
