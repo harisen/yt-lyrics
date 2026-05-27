@@ -207,102 +207,171 @@ async function fetchLyrics(title, artist, duration) {
     return null;
   }
 
-  // 返ってきたtrack名が期待するtrack名と乖離していないか確認
-  function trackRelevant(hit, expectedTrack) {
-    if (!hit?.lrclibTrack || !expectedTrack) return true;
-    const n = s => s.toLowerCase().replace(/[\s\-_]/g, '');
-    const e = n(expectedTrack), r = n(hit.lrclibTrack);
-    if (e.length <= 3) return true;
-    // 一方が他方を含む + 長さが40%以上重複していること（アーティスト名がtitle中に含まれる誤マッチを防ぐ）
-    if (r.includes(e) && e.length >= r.length * 0.4) return true;
-    if (e.includes(r) && r.length >= e.length * 0.4) return true;
-    return r === e;
+  // ── マッチング度スコア（track + artist + duration を統合評価）──
+  // 5+ = 確信(即決) / 3+ = 採用 / 0+ = 弱マッチ(救済) / 負 = 不一致
+  function scoreHit(hit, exp) {
+    if (!hit) return -100;
+    let score = 0;
+    const n = s => (s || '').toLowerCase().replace(/[\s\-_]/g, '');
+
+    // Track 一致度
+    const eT = n(exp.trackName), hT = n(hit.lrclibTrack);
+    if (eT && hT) {
+      if (eT === hT) score += 5;
+      else if (eT.length <= 2) score -= 3;
+      else if (eT.length <= 4) {
+        if (hT.includes(eT) && hT.length <= eT.length * 2) score += 2;
+        else score -= 3;
+      } else {
+        if (hT.includes(eT) && eT.length >= hT.length * 0.4) score += 3;
+        else if (eT.includes(hT) && hT.length >= eT.length * 0.4) score += 3;
+        else score -= 3;
+      }
+    }
+
+    // Artist 一致度（チャンネル名分割含めて多角的に照合）
+    const ch = (artist || '').replace(/\s*[-–—]\s*Topic$/i, '').trim();
+    const cnNorm = n(ch);
+    const chParts = cnNorm.split(/[\/／\|｜　]+/).filter(Boolean);
+    const eA = n(exp.artistName);
+    const hA = n(hit.lrclibArtist);
+    if (hA) {
+      let best = -1.5; // アーティスト不一致デフォルトでペナルティ
+      for (const c of [eA, cnNorm, ...chParts].filter(Boolean)) {
+        if (hA === c) { best = Math.max(best, 3); continue; }
+        if (c.length >= 3) {
+          if (hA.includes(c) && c.length >= hA.length * 0.4) best = Math.max(best, 2);
+          else if (hA.length >= 3 && c.includes(hA) && hA.length >= c.length * 0.4) best = Math.max(best, 2);
+        }
+      }
+      score += best;
+    }
+
+    // Duration 照合（version 違いの検出）
+    if (hit.lrclibDuration && duration > 0) {
+      const diff = Math.abs(hit.lrclibDuration - duration);
+      if (diff < 5) score += 1.5;
+      else if (diff < 15) score += 0.5;
+      else if (diff > 60) score -= 1;
+      else if (diff > 30) score -= 0.3;
+    }
+
+    // synced 優先
+    if (hit.source === 'synced') score += 0.5;
+    return score;
   }
 
   const candidates = buildSearchCandidates(title, artist);
   console.log('[YTL] 検索候補:', candidates.map((c, i) => `${i+1}. "${c.trackName}" / "${c.artistName}"`).join('\n'));
+  if (!candidates.length) return null;
 
-  const seenQ = new Set();
-  const trySearch = async (q) => {
+  // ── API呼び出しを最小化する仕組み ──
+  const triedGet = new Set();
+  const triedSearch = new Set();
+  let apiCalls = 0;
+  const pool = []; // 累積プール（最終段で再評価）
+
+  const callGet = async (track, art, useDur) => {
+    const params = new URLSearchParams({ track_name: track, artist_name: art });
+    if (useDur && duration > 0) params.set('duration', Math.round(duration));
+    const key = params.toString();
+    if (triedGet.has(key)) return null;
+    triedGet.add(key);
+    apiCalls++;
     try {
-      const r = await fetch(`${LRCLIB_BASE}/search?q=${encodeURIComponent(q)}`).catch(() => null);
-      if (r?.ok) {
-        const results = await r.json().catch(() => []);
-        return results.length > 0 ? extract(results[0]) : null;
-      }
+      const r = await fetch(`${LRCLIB_BASE}/get?${params}`).catch(() => null);
+      if (r?.ok) return extract(await r.json().catch(() => null));
     } catch (_) {}
     return null;
   };
 
-  // ── Stage 0: /search 先行（上位3候補を並列発射）──────────────────
-  // 「曲名 アーティスト名」「曲名のみ」の形式を同時に試す
-  const s0Qs = [...new Set(
-    candidates.slice(0, 3).flatMap(({ trackName, artistName }) =>
-      [artistName ? `${trackName} ${artistName}` : null, trackName].filter(Boolean)
-    )
-  )];
-  s0Qs.forEach(q => seenQ.add(q));
-  const s0Results = await Promise.all(
-    s0Qs.map(q => trySearch(q).then(r => r ? { hit: r, q } : null).catch(() => null))
-  );
-  const expectedTrack = candidates[0]?.trackName || '';
-  const s0Win = s0Results.find(r => r?.hit && trackRelevant(r.hit, expectedTrack));
-  if (s0Win) {
-    console.log(`[YTL] /search ヒット: "${s0Win.q}" → ${s0Win.hit.lrclibTrack} / ${s0Win.hit.lrclibArtist}`);
-    return s0Win.hit;
-  }
-
-  // ── Stage 1: /get（完全一致・duration あり/なし並列）─────────────
-  for (const { trackName, artistName } of candidates) {
+  const callSearch = async (q) => {
+    if (triedSearch.has(q)) return [];
+    triedSearch.add(q);
+    apiCalls++;
     try {
-      const base = new URLSearchParams({ track_name: trackName, artist_name: artistName });
-      const withDur = new URLSearchParams(base);
-      if (duration > 0) withDur.set('duration', Math.round(duration));
-
-      const [r1, r2] = await Promise.all([
-        fetch(`${LRCLIB_BASE}/get?${withDur}`).catch(() => null),
-        duration > 0 ? fetch(`${LRCLIB_BASE}/get?${base}`).catch(() => null) : Promise.resolve(null),
-      ]);
-      for (const r of [r1, r2]) {
-        if (r?.ok) {
-          const hit = extract(await r.json().catch(() => null));
-          if (hit) { console.log(`[YTL] /get ヒット: "${trackName}" / "${artistName}"`); return hit; }
-        }
+      const r = await fetch(`${LRCLIB_BASE}/search?q=${encodeURIComponent(q)}`).catch(() => null);
+      if (r?.ok) {
+        const results = await r.json().catch(() => []);
+        return results.slice(0, 5).map(extract).filter(Boolean);
       }
     } catch (_) {}
+    return [];
+  };
+
+  const primary = candidates[0];
+
+  // ── Stage 1: /get + duration（最高精度・1呼び出し）──
+  let hit = await callGet(primary.trackName, primary.artistName, true);
+  if (hit) {
+    const s = scoreHit(hit, primary);
+    if (s >= 4) {
+      console.log(`[YTL] Stage1 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
+      return hit;
+    }
+    pool.push({ hit, src: 'get+dur', score: s });
   }
 
-  // ── Stage 2: /search 追加候補（Stage 0 未試行分）─────────────────
-  for (const { trackName, artistName } of candidates) {
-    const q = artistName ? `${trackName} ${artistName}` : trackName;
-    if (seenQ.has(q)) continue;
-    seenQ.add(q);
-    const hit = await trySearch(q);
-    if (hit && trackRelevant(hit, trackName)) {
-      console.log(`[YTL] /search ヒット: "${q}" → ${hit.lrclibTrack} / ${hit.lrclibArtist}`);
-      return hit;
+  // ── Stage 2: /get without duration（version 違い救済・1呼び出し）──
+  if (duration > 0) {
+    hit = await callGet(primary.trackName, primary.artistName, false);
+    if (hit) {
+      const s = scoreHit(hit, primary);
+      if (s >= 4) {
+        console.log(`[YTL] Stage2 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
+        return hit;
+      }
+      pool.push({ hit, src: 'get', score: s });
     }
   }
 
-  // ── Stage 3: アーティスト省略 /get ──────────────────────────────
-  const uniqueTracks = [...new Set(candidates.map(c => c.trackName))];
-  for (const trackName of uniqueTracks) {
-    try {
-      const params = new URLSearchParams({ track_name: trackName });
-      const r = await fetch(`${LRCLIB_BASE}/get?${params}`).catch(() => null);
-      if (r?.ok) {
-        const hit = extract(await r.json().catch(() => null));
-        if (hit) return hit;
+  // ── Stage 3: /search "曲名 アーティスト"（top5評価・1呼び出し）──
+  const q1 = primary.artistName ? `${primary.trackName} ${primary.artistName}` : primary.trackName;
+  let hits = await callSearch(q1);
+  let scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `search(${q1})` }));
+  scored.sort((a, b) => b.score - a.score);
+  if (scored[0] && scored[0].score >= 4) {
+    console.log(`[YTL] Stage3 即決 score=${scored[0].score.toFixed(1)} q="${q1}" (calls=${apiCalls})`);
+    return scored[0].hit;
+  }
+  scored.forEach(s => pool.push(s));
+
+  // ── Stage 4: 残り候補を順次 /get（強マッチ即終了・最大2回）──
+  for (const c of candidates.slice(1, 3)) {
+    hit = await callGet(c.trackName, c.artistName, false);
+    if (hit) {
+      const s = scoreHit(hit, c);
+      if (s >= 5) {
+        console.log(`[YTL] Stage4 即決 score=${s.toFixed(1)} "${c.trackName}" (calls=${apiCalls})`);
+        return hit;
       }
-    } catch (_) {}
+      pool.push({ hit, src: `get(${c.trackName})`, score: scoreHit(hit, primary) });
+    }
   }
 
-  // ── Stage 4: 生タイトル /search（最終手段）──────────────────────
-  if (!seenQ.has(title)) {
-    const hit = await trySearch(title);
-    if (hit) return hit;
+  // ── Stage 5: 累積プールから最良採用（API呼び出しなし）──
+  pool.sort((a, b) => b.score - a.score);
+  if (pool[0] && pool[0].score >= 3) {
+    console.log(`[YTL] Stage5 累積ベスト score=${pool[0].score.toFixed(1)} src=${pool[0].src} (calls=${apiCalls})`);
+    return pool[0].hit;
   }
 
+  // ── Stage 6: /search 曲名のみ（最終救済・1呼び出し）──
+  hits = await callSearch(primary.trackName);
+  scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary) }));
+  scored.sort((a, b) => b.score - a.score);
+  if (scored[0] && scored[0].score >= 2) {
+    console.log(`[YTL] Stage6 救済 score=${scored[0].score.toFixed(1)} (calls=${apiCalls})`);
+    return scored[0].hit;
+  }
+
+  // 累積プールから低スコアでも採用（最後の手段）
+  if (pool[0] && pool[0].score >= 1) {
+    console.log(`[YTL] 低スコア採用 score=${pool[0].score.toFixed(1)} (calls=${apiCalls})`);
+    return pool[0].hit;
+  }
+
+  console.log(`[YTL] 該当なし (calls=${apiCalls})`);
   return null;
 }
 
@@ -310,7 +379,7 @@ async function fetchLyrics(title, artist, duration) {
 const lyricsCache = new Map(); // videoId → result | null（フェッチ中）
 const CACHE_KEY = 'ytl_lyrics_cache';
 const CACHE_VER_KEY = 'ytl_cache_ver';
-const CACHE_VERSION = '6'; // 検索ロジック変更時に上げるとキャッシュ自動クリア
+const CACHE_VERSION = '7'; // 検索ロジック変更時に上げるとキャッシュ自動クリア
 
 function saveCache() {
   try {
