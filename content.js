@@ -633,10 +633,10 @@ function createPanel() {
   }
   const fontDecBtn = mk('button', 'ytl-font-btn', 'A－');
   fontDecBtn.title = '文字を小さく';
-  fontDecBtn.addEventListener('click', () => { if (fontSize > 10) { fontSize -= 1; applyFontSize(); } });
+  fontDecBtn.addEventListener('click', () => { fontSize = Math.max(10, fontSize - 2); applyFontSize(); });
   const fontIncBtn = mk('button', 'ytl-font-btn', 'A＋');
   fontIncBtn.title = '文字を大きく';
-  fontIncBtn.addEventListener('click', () => { if (fontSize < 28) { fontSize += 1; applyFontSize(); } });
+  fontIncBtn.addEventListener('click', () => { fontSize = Math.min(40, fontSize + 2); applyFontSize(); });
   const closeBtn = mk('button', 'ytl-close', '✕');
   closeBtn.title = '閉じる';
   closeBtn.addEventListener('click', () => {
