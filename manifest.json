@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "YT Lyrics",
+  "version": "1.0.0",
+  "description": "YouTubeでリアルタイム歌詞表示 - lrclib.net連携",
+  "permissions": ["scripting", "activeTab", "storage"],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://lrclib.net/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["kuromoji.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dict/*.gz"],
+      "matches": ["https://www.youtube.com/*"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "dev-reload": {
+      "suggested_key": { "default": "Ctrl+Shift+U" },
+      "description": "拡張機能を再読み込み"
+    }
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "YT Lyrics"
+  }
+}

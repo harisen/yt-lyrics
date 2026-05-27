@@ -1,0 +1,12 @@
+{
+  "name": "yt-lyrics",
+  "version": "1.0.0",
+  "description": "YouTube歌詞オーバーレイ Chrome拡張機能",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "kuromoji": "^0.1.2",
+    "playwright": "^1.49.0"
+  }
+}
