@@ -649,20 +649,26 @@ function createPanel() {
   searchBtn.title = '手動で曲を検索';
   header.append(mk('span', 'ytl-icon', '♪'), mk('span', 'ytl-title', '歌詞'), mk('span', 'ytl-source', ''), focusBtn, reloadBtn, rubyBtn, fontDecBtn, fontLabel, fontIncBtn, searchBtn, closeBtn);
 
-  // オフセットバー（ラベル行 + ボタン行の2段構成）
+  // オフセットバー（タップ同期 + 微調整 0.1）
   const offsetBar = mk('div', 'ytl-offset-bar');
-  const offsetLabelRow = mk('div', 'ytl-offset-label-row');
-  const offsetLabel = mk('span', 'ytl-offset-label', 'オフセット: 0.0s');
-  offsetLabel.id = 'ytl-offset-label';
-  const tapSyncBtn = mk('button', 'ytl-tapsync-btn', '🎯');
-  tapSyncBtn.title = 'タップ同期：動画を合わせてから歌詞をクリック';
+
+  // タップ同期ボタン（メインアクション・大きく目立つ）
+  const tapSyncBtn = mk('button', 'ytl-tapsync-btn', '');
+  const tapSyncIcon = mk('span', 'ytl-tapsync-icon', '🎯');
+  const tapSyncLabel = mk('span', 'ytl-tapsync-label', 'タップして歌詞を合わせる');
+  tapSyncBtn.append(tapSyncIcon, tapSyncLabel);
+  tapSyncBtn.title = '動画を合わせてから歌詞行をクリック';
   tapSyncBtn.addEventListener('click', () => {
     tapSyncMode = !tapSyncMode;
     tapSyncBtn.classList.toggle('active', tapSyncMode);
     panel.classList.toggle('ytl-tapsync', tapSyncMode);
+    tapSyncLabel.textContent = tapSyncMode ? '歌詞行をクリック...' : 'タップして歌詞を合わせる';
   });
-  offsetLabelRow.append(offsetLabel, tapSyncBtn);
-  const btnRow = mk('div', 'ytl-offset-btns');
+
+  // オフセット表示 + 微調整 0.1
+  const offsetMicroRow = mk('div', 'ytl-offset-micro-row');
+  const offsetLabel = mk('span', 'ytl-offset-label', 'オフセット: 0.0s');
+  offsetLabel.id = 'ytl-offset-label';
   function updateOffsetLabel() {
     const v = window.__ytlOffset ?? 0;
     offsetLabel.textContent = `オフセット: ${v > 0 ? '+' : ''}${v.toFixed(1)}s`;
@@ -677,16 +683,9 @@ function createPanel() {
     });
     return btn;
   }
-  const resetBtn = mk('button', 'ytl-off-btn', '↺');
-  resetBtn.title = 'リセット';
-  resetBtn.addEventListener('click', () => {
-    window.__ytlOffset = 0;
-    updateOffsetLabel();
-    const vid = new URLSearchParams(location.search).get('v');
-    if (vid) saveVideoOffset(vid, 0);
-  });
-  btnRow.append(makeOffBtn('－1', -1), makeOffBtn('－0.1', -0.1), makeOffBtn('＋0.1', 0.1), makeOffBtn('＋1', 1), resetBtn);
-  offsetBar.append(offsetLabelRow, btnRow);
+  offsetMicroRow.append(offsetLabel, makeOffBtn('－0.1', -0.1), makeOffBtn('＋0.1', 0.1));
+
+  offsetBar.append(tapSyncBtn, offsetMicroRow);
 
   // ボディ
   const body = mk('div', 'ytl-body');
@@ -761,6 +760,8 @@ function renderSyncedLyrics(panel, lines) {
         tapSyncMode = false;
         panel.classList.remove('ytl-tapsync');
         panel.querySelector('.ytl-tapsync-btn')?.classList.remove('active');
+        const tsLbl = panel.querySelector('.ytl-tapsync-label');
+        if (tsLbl) tsLbl.textContent = 'タップして歌詞を合わせる';
         return;
       }
       const video = document.querySelector('video.html5-main-video');
@@ -827,6 +828,8 @@ async function loadLyrics() {
     if (lbl) lbl.textContent = 'オフセット: 0.0s';
     panel.classList.remove('ytl-tapsync');
     panel.querySelector('.ytl-tapsync-btn')?.classList.remove('active');
+    const tsLbl = panel.querySelector('.ytl-tapsync-label');
+    if (tsLbl) tsLbl.textContent = 'タップして歌詞を合わせる';
   }
 
   setStatus(panel, '歌詞を読み込み中...');
