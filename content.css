@@ -1,8 +1,113 @@
-/* YT Lyrics - サイドパネルスタイル */
+/* ──────────────────────────────────────────────────────────────
+   YT Lyrics — リデザイン v2
+   Theme system + adaptive layout
+   ────────────────────────────────────────────────────────────── */
 
+/* ════════ Theme tokens ════════ */
 #yt-lyrics-panel {
-  background: #0f0f0f;
-  border: 1px solid #333;
+  /* Dark (default) */
+  --ytl-bg: #0f0f0f;
+  --ytl-bg-elev: #1a1a1a;
+  --ytl-bg-hover: #2a2a2a;
+  --ytl-border: #333;
+  --ytl-border-soft: #2a2a2a;
+  --ytl-fg: #e0e0e0;
+  --ytl-fg-strong: #fff;
+  --ytl-fg-muted: #888;
+  --ytl-fg-dim: #555;
+  --ytl-accent: #4caf50;
+  --ytl-accent-bg: rgba(76, 175, 80, 0.15);
+  --ytl-active: #ffffff;
+  --ytl-active-bg: #1a1a1a;
+  --ytl-conf-high: #4caf50;
+  --ytl-conf-high-bg: rgba(76, 175, 80, 0.15);
+  --ytl-conf-mid: #ffb84d;
+  --ytl-conf-mid-bg: rgba(255, 184, 77, 0.15);
+  --ytl-conf-low: #ff7a3a;
+  --ytl-conf-low-bg: rgba(255, 122, 58, 0.15);
+  --ytl-conf-verylow: #f44336;
+  --ytl-conf-verylow-bg: rgba(244, 67, 54, 0.15);
+  --ytl-tapsync-bg: #1a2a1a;
+  --ytl-tapsync-border: #2d6e2d;
+  --ytl-tapsync-fg: #6dbd6d;
+  --ytl-tapsync-active-bg: #2a1500;
+  --ytl-tapsync-active-border: #ff9900;
+  --ytl-tapsync-active-fg: #ffb84d;
+  --ytl-drawer-bg: #161616;
+}
+
+#yt-lyrics-panel[data-theme="midnight"] {
+  --ytl-bg: #000;
+  --ytl-bg-elev: #0a0a0a;
+  --ytl-bg-hover: #1a1a1a;
+  --ytl-border: #222;
+  --ytl-border-soft: #161616;
+  --ytl-fg: #d0d0d0;
+  --ytl-fg-strong: #fff;
+  --ytl-fg-muted: #666;
+  --ytl-fg-dim: #3a3a3a;
+  --ytl-active-bg: #0a0a0a;
+  --ytl-drawer-bg: #0a0a0a;
+}
+
+#yt-lyrics-panel[data-theme="light"] {
+  --ytl-bg: #ffffff;
+  --ytl-bg-elev: #f5f5f5;
+  --ytl-bg-hover: #ebebeb;
+  --ytl-border: #ddd;
+  --ytl-border-soft: #ececec;
+  --ytl-fg: #2a2a2a;
+  --ytl-fg-strong: #000;
+  --ytl-fg-muted: #888;
+  --ytl-fg-dim: #aaa;
+  --ytl-accent: #2e7d32;
+  --ytl-accent-bg: rgba(46, 125, 50, 0.12);
+  --ytl-active: #000;
+  --ytl-active-bg: #fff8d1;
+  --ytl-conf-high: #2e7d32;
+  --ytl-conf-mid: #ef6c00;
+  --ytl-conf-low: #e64a19;
+  --ytl-conf-verylow: #c62828;
+  --ytl-tapsync-bg: #e8f5e9;
+  --ytl-tapsync-border: #4caf50;
+  --ytl-tapsync-fg: #2e7d32;
+  --ytl-tapsync-active-bg: #fff3e0;
+  --ytl-tapsync-active-border: #f57c00;
+  --ytl-tapsync-active-fg: #ef6c00;
+  --ytl-drawer-bg: #fafafa;
+}
+
+#yt-lyrics-panel[data-theme="sepia"] {
+  --ytl-bg: #fbf5e8;
+  --ytl-bg-elev: #f5ecd9;
+  --ytl-bg-hover: #ede2c5;
+  --ytl-border: #c8b896;
+  --ytl-border-soft: #d6c8a8;
+  --ytl-fg: #4a3a2a;
+  --ytl-fg-strong: #2a1a0a;
+  --ytl-fg-muted: #8a7a5a;
+  --ytl-fg-dim: #b8a888;
+  --ytl-accent: #6d8a3a;
+  --ytl-accent-bg: rgba(109, 138, 58, 0.18);
+  --ytl-active: #2a1a0a;
+  --ytl-active-bg: #f0e6c8;
+  --ytl-conf-high: #5a6a2a;
+  --ytl-conf-mid: #b87a2a;
+  --ytl-conf-low: #a85020;
+  --ytl-conf-verylow: #8a2020;
+  --ytl-tapsync-bg: #ede8c5;
+  --ytl-tapsync-border: #8a9c4a;
+  --ytl-tapsync-fg: #5a6a2a;
+  --ytl-tapsync-active-bg: #f5d8a8;
+  --ytl-tapsync-active-border: #b87a2a;
+  --ytl-tapsync-active-fg: #8a4a1a;
+  --ytl-drawer-bg: #f5ecd9;
+}
+
+/* ════════ Panel ════════ */
+#yt-lyrics-panel {
+  background: var(--ytl-bg);
+  border: 1px solid var(--ytl-border);
   border-radius: 12px;
   margin: 0 0 16px 0;
   overflow: hidden;
@@ -13,54 +118,195 @@
   position: sticky;
   top: 80px;
   z-index: 10;
+  color: var(--ytl-fg);
+  /* drawer の絶対配置を受けるため */
+  position: sticky;
 }
 
-/* ヘッダー */
+/* ════════ Header (3-button design) ════════ */
 .ytl-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px 14px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--ytl-bg-elev);
+  border-bottom: 1px solid var(--ytl-border-soft);
   min-height: 44px;
+}
+
+.ytl-title-block {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .ytl-icon {
   font-size: 16px;
   color: #ff4444;
+  flex-shrink: 0;
 }
 
 .ytl-title {
-  flex: 1;
   font-size: 13px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--ytl-fg-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
-.ytl-source {
+.ytl-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.ytl-icon-btn {
+  background: none;
+  border: none;
+  color: var(--ytl-fg-muted);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+
+.ytl-icon-btn:hover {
+  color: var(--ytl-fg-strong);
+  background: var(--ytl-bg-hover);
+}
+
+/* ════════ Confidence Pill ════════ */
+.ytl-confidence-pill {
+  background: var(--ytl-conf-high-bg);
+  color: var(--ytl-conf-high);
+  border: 1px solid var(--ytl-conf-high);
+  border-radius: 12px;
+  padding: 2px 9px;
   font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 10px;
-  font-weight: 500;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-family: inherit;
+  transition: filter 0.15s, transform 0.15s;
 }
 
-.ytl-source.synced {
-  background: #1a3a1a;
-  color: #4caf50;
-  border: 1px solid #2d6e2d;
+.ytl-confidence-pill:hover {
+  filter: brightness(1.2);
+  transform: translateY(-1px);
 }
 
-.ytl-source.plain {
-  background: #2a2a1a;
-  color: #aaa;
-  border: 1px solid #444;
+.ytl-confidence-pill[data-level="mid"] {
+  background: var(--ytl-conf-mid-bg);
+  color: var(--ytl-conf-mid);
+  border-color: var(--ytl-conf-mid);
 }
 
-/* ── タップ同期ボタン（メインアクション・大きく目立つ）── */
+.ytl-confidence-pill[data-level="low"] {
+  background: var(--ytl-conf-low-bg);
+  color: var(--ytl-conf-low);
+  border-color: var(--ytl-conf-low);
+}
+
+.ytl-confidence-pill[data-level="verylow"] {
+  background: var(--ytl-conf-verylow-bg);
+  color: var(--ytl-conf-verylow);
+  border-color: var(--ytl-conf-verylow);
+}
+
+/* ════════ Alternate Picker ════════ */
+.ytl-alt-picker {
+  background: var(--ytl-bg-elev);
+  border-bottom: 1px solid var(--ytl-border-soft);
+  padding: 6px;
+  font-size: 12px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.ytl-alt-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+  color: var(--ytl-fg);
+}
+
+.ytl-alt-item:hover:not(.ytl-alt-current) {
+  background: var(--ytl-bg-hover);
+}
+
+.ytl-alt-current {
+  background: var(--ytl-bg-hover);
+  cursor: default;
+}
+
+.ytl-alt-check {
+  width: 14px;
+  text-align: center;
+  color: var(--ytl-accent);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ytl-alt-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ytl-alt-conf {
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ytl-alt-conf.level-high { color: var(--ytl-conf-high); }
+.ytl-alt-conf.level-mid { color: var(--ytl-conf-mid); }
+.ytl-alt-conf.level-low { color: var(--ytl-conf-low); }
+.ytl-alt-conf.level-verylow { color: var(--ytl-conf-verylow); }
+
+.ytl-alt-sep {
+  height: 1px;
+  background: var(--ytl-border-soft);
+  margin: 6px 4px;
+}
+
+.ytl-alt-action {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--ytl-fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 8px;
+  text-align: left;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.ytl-alt-action:hover {
+  color: var(--ytl-fg-strong);
+  background: var(--ytl-bg-hover);
+}
+
+/* ════════ Tap Sync Button ════════ */
 .ytl-tapsync-btn {
   display: flex;
   align-items: center;
@@ -68,10 +314,10 @@
   gap: 8px;
   width: 100%;
   padding: 10px 14px;
-  background: #1a2a1a;
-  border: 1px solid #2d6e2d;
+  background: var(--ytl-tapsync-bg);
+  border: 1px solid var(--ytl-tapsync-border);
   border-radius: 8px;
-  color: #6dbd6d;
+  color: var(--ytl-tapsync-fg);
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
@@ -79,35 +325,33 @@
   transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 
-.ytl-tapsync-btn:hover {
-  background: #1d3a1d;
-  border-color: #3a8a3a;
-  color: #8edc8e;
-}
+.ytl-tapsync-btn:hover { filter: brightness(1.15); }
 
 .ytl-tapsync-btn.active {
-  background: #2a1500;
-  border-color: #ff9900;
-  color: #ffb84d;
+  background: var(--ytl-tapsync-active-bg);
+  border-color: var(--ytl-tapsync-active-border);
+  color: var(--ytl-tapsync-active-fg);
   animation: ytl-tapsync-pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes ytl-tapsync-pulse {
-  0%, 100% { background: #2a1500; }
-  50% { background: #3d2200; }
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.3); }
 }
 
-.ytl-tapsync-icon {
-  font-size: 16px;
-  line-height: 1;
+.ytl-tapsync-icon { font-size: 16px; line-height: 1; }
+.ytl-tapsync-label { flex: 1; text-align: center; }
+
+/* ════════ Offset Bar ════════ */
+.ytl-offset-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--ytl-bg);
+  border-bottom: 1px solid var(--ytl-border-soft);
 }
 
-.ytl-tapsync-label {
-  flex: 1;
-  text-align: center;
-}
-
-/* ── オフセット微調整行（小さく控えめに） ── */
 .ytl-offset-micro-row {
   display: flex;
   align-items: center;
@@ -115,29 +359,9 @@
   margin-top: 4px;
 }
 
-/* タップ同期モード中の歌詞スタイル */
-#yt-lyrics-panel.ytl-tapsync .ytl-line:not(.plain) {
-  cursor: crosshair;
-}
-
-#yt-lyrics-panel.ytl-tapsync .ytl-line:not(.plain):hover {
-  background: #1a1200;
-  color: #ffcc44;
-}
-
-/* ── オフセットバー ── */
-.ytl-offset-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 14px;
-  background: #111;
-  border-bottom: 1px solid #1e1e1e;
-}
-
 .ytl-offset-label {
   font-size: 11px;
-  color: #666;
+  color: var(--ytl-fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -146,153 +370,56 @@
 }
 
 .ytl-off-btn {
-  background: #1e1e1e;
-  border: 1px solid #333;
-  color: #aaa;
+  background: var(--ytl-bg-elev);
+  border: 1px solid var(--ytl-border);
+  color: var(--ytl-fg);
   border-radius: 4px;
   padding: 3px 10px;
   cursor: pointer;
   font-size: 11px;
   text-align: center;
   flex-shrink: 0;
+  font-family: inherit;
   transition: background 0.15s, color 0.15s;
 }
 
 .ytl-off-btn:hover {
-  background: #2a2a2a;
-  color: #fff;
+  background: var(--ytl-bg-hover);
+  color: var(--ytl-fg-strong);
 }
 
-/* ── ヘッダーボタン ── */
-.ytl-focus-btn,
-.ytl-reload-btn,
-.ytl-close {
-  background: none;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  font-size: 14px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  line-height: 1;
-  transition: color 0.15s;
-}
-
-.ytl-focus-btn:hover,
-.ytl-reload-btn:hover,
-.ytl-close:hover {
-  color: #ccc;
-  background: #2a2a2a;
-}
-
-.ytl-focus-btn {
-  font-size: 16px;
-}
-
-.ytl-reload-btn {
-  font-size: 15px;
-}
-
-.ytl-ruby-btn {
-  font-size: 12px;
-  font-weight: 600;
-  opacity: 0.4;
-}
-
-.ytl-ruby-btn.active {
-  opacity: 1;
-  color: #4caf50;
-}
-
-.ytl-font-btn {
-  background: none;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 3px;
-  border-radius: 4px;
-  line-height: 1;
-  transition: color 0.15s;
-}
-
-.ytl-font-btn:hover {
-  color: #ccc;
-  background: #2a2a2a;
-}
-
-.ytl-font-label {
-  font-size: 10px;
-  color: #555;
-  min-width: 16px;
-  text-align: center;
-  line-height: 1;
-}
-
-/* ── ルビ（フリガナ） ── */
-.ytl-line ruby {
-  ruby-position: over;
-}
-
-.ytl-line rt {
-  font-size: 0.48em;
-  color: #555;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-}
-
-.ytl-line.active rt {
-  color: #bbb;
-}
-
-.ytl-line.past rt {
-  color: #3a3a3a;
-}
-
-/* ボディ（ヘッダー固定のため flex: 1 + min-height: 0 が必須） */
+/* ════════ Body ════════ */
 .ytl-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 12px 0;
   scrollbar-width: thin;
-  scrollbar-color: #333 transparent;
+  scrollbar-color: var(--ytl-border) transparent;
+  background: var(--ytl-bg);
 }
 
-.ytl-body::-webkit-scrollbar {
-  width: 4px;
-}
+.ytl-body::-webkit-scrollbar { width: 4px; }
+.ytl-body::-webkit-scrollbar-track { background: transparent; }
+.ytl-body::-webkit-scrollbar-thumb { background: var(--ytl-border); border-radius: 2px; }
 
-.ytl-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.ytl-body::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 2px;
-}
-
-/* ステータスメッセージ */
 .ytl-status {
   text-align: center;
-  color: #666;
+  color: var(--ytl-fg-muted);
   font-size: 13px;
   padding: 24px 16px;
   white-space: pre-line;
   line-height: 1.8;
 }
 
-/* 歌詞行 */
-.ytl-lines {
-  padding: 0 4px;
-}
+/* ════════ Lyrics Lines ════════ */
+.ytl-lines { padding: 0 4px; }
 
 .ytl-line {
   padding: 8px 16px;
   font-size: var(--ytl-font-size, 15px);
   line-height: 1.6;
-  color: #555;
+  color: var(--ytl-fg-dim);
   border-radius: 6px;
   transition: color 0.3s, background 0.3s, font-size 0.2s;
   cursor: default;
@@ -300,37 +427,292 @@
 }
 
 .ytl-line.plain {
-  color: #aaa;
+  color: var(--ytl-fg-muted);
   font-size: calc(var(--ytl-font-size, 15px) - 1px);
   padding: 4px 16px;
 }
 
-/* 1つ前の行 */
 .ytl-line.past {
-  color: #444;
+  color: var(--ytl-fg-dim);
+  opacity: 0.6;
 }
 
-/* 現在の行 */
 .ytl-line.active {
-  color: #ffffff;
+  color: var(--ytl-active);
   font-size: calc(var(--ytl-font-size, 15px) + 2px);
   font-weight: 600;
-  background: #1a1a1a;
+  background: var(--ytl-active-bg);
 }
 
-/* クリックシーク */
-.ytl-line:not(.plain) {
-  cursor: pointer;
-}
+.ytl-line:not(.plain) { cursor: pointer; }
+
 .ytl-line:not(.plain):hover {
-  background: #1e1e1e;
-  color: #bbb;
-}
-.ytl-line.active:hover {
-  color: #ffffff;
+  background: var(--ytl-bg-hover);
+  color: var(--ytl-fg);
 }
 
-/* ── フォーカスモード ── */
+.ytl-line.active:hover { color: var(--ytl-active); }
+
+/* Ruby */
+.ytl-line ruby { ruby-position: over; }
+
+.ytl-line rt {
+  font-size: 0.48em;
+  color: var(--ytl-fg-dim);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.ytl-line.active rt { color: var(--ytl-fg-muted); }
+.ytl-line.past rt { opacity: 0.5; }
+
+/* ════════ Settings Drawer ════════ */
+.ytl-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 80%;
+  max-width: 280px;
+  background: var(--ytl-drawer-bg);
+  border-left: 1px solid var(--ytl-border);
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.4);
+}
+
+.ytl-drawer.open {
+  transform: translateX(0);
+}
+
+.ytl-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ytl-border-soft);
+  background: var(--ytl-bg-elev);
+  flex-shrink: 0;
+}
+
+.ytl-drawer-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ytl-fg-strong);
+}
+
+.ytl-drawer-section {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--ytl-border-soft);
+}
+
+.ytl-drawer-section:last-child { border-bottom: none; }
+
+.ytl-drawer-section-title {
+  font-size: 10px;
+  color: var(--ytl-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 8px 14px 4px;
+  font-weight: 700;
+}
+
+.ytl-drawer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 14px;
+}
+
+.ytl-drawer-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--ytl-fg);
+}
+
+.ytl-drawer-inline {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ytl-drawer-mini-btn {
+  background: var(--ytl-bg-elev);
+  border: 1px solid var(--ytl-border);
+  color: var(--ytl-fg);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.ytl-drawer-mini-btn:hover { background: var(--ytl-bg-hover); }
+
+.ytl-drawer-select {
+  background: var(--ytl-bg-elev);
+  border: 1px solid var(--ytl-border);
+  color: var(--ytl-fg);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 110px;
+}
+
+.ytl-drawer-toggle {
+  background: var(--ytl-bg-elev);
+  border: 1px solid var(--ytl-border);
+  color: var(--ytl-fg-muted);
+  border-radius: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: inherit;
+  min-width: 50px;
+  text-align: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.ytl-drawer-toggle.active {
+  background: var(--ytl-accent-bg);
+  border-color: var(--ytl-accent);
+  color: var(--ytl-accent);
+}
+
+.ytl-drawer-action {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 4px 14px;
+  background: var(--ytl-bg-elev);
+  border: 1px solid var(--ytl-border);
+  color: var(--ytl-fg);
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ytl-drawer-action:hover {
+  background: var(--ytl-bg-hover);
+  color: var(--ytl-fg-strong);
+}
+
+/* ════════ Search Bar ════════ */
+.ytl-search-bar {
+  padding: 8px 12px;
+  background: var(--ytl-bg-elev);
+  border-bottom: 1px solid var(--ytl-border-soft);
+}
+
+.ytl-search-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ytl-search-input {
+  flex: 1;
+  background: var(--ytl-bg);
+  border: 1px solid var(--ytl-border);
+  border-radius: 6px;
+  color: var(--ytl-fg);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  font-family: inherit;
+}
+
+.ytl-search-input:focus { border-color: var(--ytl-fg-muted); }
+
+.ytl-search-go {
+  background: var(--ytl-bg-hover);
+  border: 1px solid var(--ytl-border);
+  border-radius: 6px;
+  color: var(--ytl-fg);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.ytl-search-go:hover {
+  background: var(--ytl-border);
+  color: var(--ytl-fg-strong);
+}
+
+.ytl-search-results {
+  font-size: 11px;
+  color: var(--ytl-fg-muted);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.ytl-search-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.ytl-search-result:hover { background: var(--ytl-bg-hover); }
+
+.ytl-search-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ytl-search-badge.synced {
+  background: var(--ytl-accent-bg);
+  color: var(--ytl-accent);
+  border: 1px solid var(--ytl-accent);
+}
+
+.ytl-search-badge.plain {
+  background: var(--ytl-bg-hover);
+  color: var(--ytl-fg-muted);
+  border: 1px solid var(--ytl-border);
+}
+
+.ytl-search-name {
+  color: var(--ytl-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ════════ Tap Sync Mode (lyrics styles) ════════ */
+#yt-lyrics-panel.ytl-tapsync .ytl-line:not(.plain) {
+  cursor: crosshair;
+}
+
+#yt-lyrics-panel.ytl-tapsync .ytl-line:not(.plain):hover {
+  background: var(--ytl-tapsync-active-bg);
+  color: var(--ytl-tapsync-active-fg);
+}
+
+/* ════════ Focus Mode ════════ */
 ytd-watch-flexy.ytl-focus #primary.ytd-watch-flexy {
   max-width: 280px !important;
   min-width: 0 !important;
@@ -354,116 +736,4 @@ ytd-watch-flexy.ytl-focus #yt-lyrics-panel .ytl-line {
 
 ytd-watch-flexy.ytl-focus #yt-lyrics-panel .ytl-line.active {
   font-size: calc(var(--ytl-font-size, 15px) + 11px) !important;
-}
-
-/* ── 手動検索バー ── */
-.ytl-search-btn {
-  background: none;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  line-height: 1;
-  transition: color 0.15s;
-}
-
-.ytl-search-btn:hover {
-  color: #ccc;
-  background: #2a2a2a;
-}
-
-.ytl-search-bar {
-  padding: 8px 12px;
-  background: #0d0d0d;
-  border-bottom: 1px solid #1e1e1e;
-}
-
-.ytl-search-row {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.ytl-search-input {
-  flex: 1;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-radius: 6px;
-  color: #e0e0e0;
-  font-size: 12px;
-  padding: 5px 8px;
-  outline: none;
-  font-family: inherit;
-}
-
-.ytl-search-input:focus {
-  border-color: #555;
-}
-
-.ytl-search-go {
-  background: #2a2a2a;
-  border: 1px solid #444;
-  border-radius: 6px;
-  color: #ccc;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 5px 10px;
-  white-space: nowrap;
-  transition: background 0.15s;
-}
-
-.ytl-search-go:hover {
-  background: #383838;
-  color: #fff;
-}
-
-.ytl-search-results {
-  font-size: 11px;
-  color: #666;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.ytl-search-result {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.1s;
-}
-
-.ytl-search-result:hover {
-  background: #1e1e1e;
-}
-
-.ytl-search-badge {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  font-weight: 600;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.ytl-search-badge.synced {
-  background: #1a3a1a;
-  color: #4caf50;
-  border: 1px solid #2d6e2d;
-}
-
-.ytl-search-badge.plain {
-  background: #2a2a1a;
-  color: #999;
-  border: 1px solid #444;
-}
-
-.ytl-search-name {
-  color: #bbb;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

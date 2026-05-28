@@ -373,38 +373,55 @@ async function fetchLyrics(title, artist, duration, description = '') {
   const primary = candidates[0];
   const isHighConf = primary.confidence >= 4;
 
+  // 採用 hit にメタ情報（信頼度・代替候補）を attach して返す
+  const attachMeta = (hit, score) => {
+    if (!hit) return null;
+    hit._confidence = score;
+    const seen = new Set([`${hit.lrclibTrack}|${hit.lrclibArtist}`]);
+    hit._alternates = [...pool]
+      .filter(c => c.hit)
+      .sort((a, b) => b.score - a.score)
+      .filter(c => {
+        const k = `${c.hit.lrclibTrack}|${c.hit.lrclibArtist}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 4)
+      .map(c => Object.assign({}, c.hit, { _confidence: c.score }));
+    return hit;
+  };
+
   // ── Stage 1: /search 曲名のみ（最も命中率が高い・1呼び出し）──
-  // ユーザー洞察: lrclib の /search は曲名単体の方がヒットしやすい
-  // 候補のアーティスト名は scoreHit で検証だけして、クエリには含めない
   let hits = await callSearch(primary.trackName);
   let scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `s(${primary.trackName})` }));
   scored.sort((a, b) => b.score - a.score);
+  scored.forEach(s => pool.push(s));
   if (scored[0] && scored[0].score >= 4) {
     console.log(`[YTL] Stage1 即決 score=${scored[0].score.toFixed(1)} → ${scored[0].hit.lrclibTrack} / ${scored[0].hit.lrclibArtist} (calls=${apiCalls})`);
-    return scored[0].hit;
+    return attachMeta(scored[0].hit, scored[0].score);
   }
-  scored.forEach(s => pool.push(s));
 
   // ── Stage 2: 高信頼度時は /get で精密一致を試す（1-2呼び出し）──
   if (isHighConf && primary.artistName) {
     let hit = await callGet(primary.trackName, primary.artistName, true);
     if (hit) {
       const s = scoreHit(hit, primary);
+      pool.push({ hit, src: 'get+dur', score: s });
       if (s >= 4) {
         console.log(`[YTL] Stage2 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
-        return hit;
+        return attachMeta(hit, s);
       }
-      pool.push({ hit, src: 'get+dur', score: s });
     }
     if (duration > 0) {
       hit = await callGet(primary.trackName, primary.artistName, false);
       if (hit) {
         const s = scoreHit(hit, primary);
+        pool.push({ hit, src: 'get', score: s });
         if (s >= 4) {
           console.log(`[YTL] Stage2b 即決 score=${s.toFixed(1)} (calls=${apiCalls})`);
-          return hit;
+          return attachMeta(hit, s);
         }
-        pool.push({ hit, src: 'get', score: s });
       }
     }
   }
@@ -418,12 +435,11 @@ async function fetchLyrics(title, artist, duration, description = '') {
     const cand = candidates.find(c => c.trackName === trackName) || primary;
     scored = hits.map(h => ({ hit: h, score: scoreHit(h, cand), src: `s(${trackName})` }));
     scored.sort((a, b) => b.score - a.score);
+    scored.forEach(s => pool.push({ ...s, score: scoreHit(s.hit, primary) }));
     if (scored[0] && scored[0].score >= 5) {
       console.log(`[YTL] Stage3 即決 score=${scored[0].score.toFixed(1)} "${trackName}" (calls=${apiCalls})`);
-      return scored[0].hit;
+      return attachMeta(scored[0].hit, scored[0].score);
     }
-    // primary 視点でも再評価してプールへ
-    scored.forEach(s => pool.push({ ...s, score: scoreHit(s.hit, primary) }));
   }
 
   // ── Stage 4: low-confidence なら "track artist" 結合検索 ──
@@ -432,24 +448,24 @@ async function fetchLyrics(title, artist, duration, description = '') {
     hits = await callSearch(q);
     scored = hits.map(h => ({ hit: h, score: scoreHit(h, primary), src: `s(${q})` }));
     scored.sort((a, b) => b.score - a.score);
+    scored.forEach(s => pool.push(s));
     if (scored[0] && scored[0].score >= 4) {
       console.log(`[YTL] Stage4 即決 score=${scored[0].score.toFixed(1)} q="${q}" (calls=${apiCalls})`);
-      return scored[0].hit;
+      return attachMeta(scored[0].hit, scored[0].score);
     }
-    scored.forEach(s => pool.push(s));
   }
 
   // ── Stage 5: 累積プールから最良採用（API呼び出しなし）──
   pool.sort((a, b) => b.score - a.score);
   if (pool[0] && pool[0].score >= 3) {
     console.log(`[YTL] Stage5 累積ベスト score=${pool[0].score.toFixed(1)} src=${pool[0].src} → ${pool[0].hit.lrclibTrack} / ${pool[0].hit.lrclibArtist} (calls=${apiCalls})`);
-    return pool[0].hit;
+    return attachMeta(pool[0].hit, pool[0].score);
   }
 
   // ── Stage 6: 低スコアでも採用（最後の救済）──
   if (pool[0] && pool[0].score >= 1) {
     console.log(`[YTL] 低スコア採用 score=${pool[0].score.toFixed(1)} (calls=${apiCalls})`);
-    return pool[0].hit;
+    return attachMeta(pool[0].hit, pool[0].score);
   }
 
   console.log(`[YTL] 該当なし (calls=${apiCalls})`);
@@ -460,7 +476,7 @@ async function fetchLyrics(title, artist, duration, description = '') {
 const lyricsCache = new Map(); // videoId → result | null（フェッチ中）
 const CACHE_KEY = 'ytl_lyrics_cache';
 const CACHE_VER_KEY = 'ytl_cache_ver';
-const CACHE_VERSION = '8'; // 検索ロジック変更時に上げるとキャッシュ自動クリア
+const CACHE_VERSION = '9'; // hit object に _confidence / _alternates が追加されたためバンプ
 
 function saveCache() {
   try {
@@ -673,16 +689,7 @@ function refreshRuby(panel) {
   });
 }
 
-// ── フォーカスモード ───────────────────────────────────────────
-function toggleFocusMode(btn) {
-  focusMode = !focusMode;
-  document.querySelector('ytd-watch-flexy')?.classList.toggle('ytl-focus', focusMode);
-  document.getElementById(PANEL_ID)?.classList.toggle('ytl-focus', focusMode);
-  btn.textContent = focusMode ? '⊡' : '⤢';
-  btn.title = focusMode ? '通常モード' : '歌詞フォーカスモード';
-}
-
-// ── パネルの作成 ───────────────────────────────────────────────
+// ── パネルの作成（リデザイン v2: 3ボタン + ピル + ドロワー） ──
 function createPanel() {
   const existing = document.getElementById(PANEL_ID);
   if (existing) return existing;
@@ -690,56 +697,59 @@ function createPanel() {
   const panel = mk('div');
   panel.id = PANEL_ID;
 
-  // ヘッダー
+  // テーマ復元
+  panel.dataset.theme = localStorage.getItem('ytl_theme') || 'dark';
+
+  // ── ヘッダー（タイトル＋ピル / 設定＋閉じる） ──
   const header = mk('div', 'ytl-header');
-  const focusBtn = mk('button', 'ytl-focus-btn', '⤢');
-  focusBtn.title = '歌詞フォーカスモード';
-  focusBtn.addEventListener('click', () => toggleFocusMode(focusBtn));
-  const reloadBtn = mk('button', 'ytl-reload-btn', '↻');
-  reloadBtn.title = '手動で再読み込み';
-  reloadBtn.addEventListener('click', () => {
-    const vid = new URLSearchParams(location.search).get('v');
-    if (vid) {
-      lyricsCache.delete(vid);
-      try { localStorage.removeItem(OFFSET_KEY_PREFIX + vid); } catch (_) {}
-    }
-    currentVideoId = null;
-    loadLyrics();
-  });
-  const rubyBtn = mk('button', 'ytl-ruby-btn', 'ふ');
-  rubyBtn.title = 'フリガナ ON/OFF';
-  rubyBtn.classList.add('active');
-  rubyBtn.addEventListener('click', () => {
-    rubyEnabled = !rubyEnabled;
-    rubyBtn.classList.toggle('active', rubyEnabled);
-    refreshRuby(panel);
-  });
-  let fontSize = 15;
-  function applyFontSize() {
-    panel.style.setProperty('--ytl-font-size', `${fontSize}px`);
-  }
-  const fontDecBtn = mk('button', 'ytl-font-btn', '小');
-  fontDecBtn.title = '文字を小さく';
-  fontDecBtn.addEventListener('click', () => { fontSize = Math.max(10, fontSize - 10); applyFontSize(); });
-  const fontIncBtn = mk('button', 'ytl-font-btn', '大');
-  fontIncBtn.title = '文字を大きく';
-  fontIncBtn.addEventListener('click', () => { fontSize = Math.min(60, fontSize + 10); applyFontSize(); });
-  const closeBtn = mk('button', 'ytl-close', '✕');
+
+  const titleBlock = mk('div', 'ytl-title-block');
+  const titleIcon = mk('span', 'ytl-icon', '♪');
+  const title = mk('span', 'ytl-title', '歌詞');
+  const confidence = mk('button', 'ytl-confidence-pill');
+  confidence.style.display = 'none';
+  confidence.title = '別候補・検索オプション';
+  titleBlock.append(titleIcon, title, confidence);
+
+  const headerActions = mk('div', 'ytl-header-actions');
+  const settingsBtn = mk('button', 'ytl-icon-btn ytl-settings-btn', '⚙');
+  settingsBtn.title = '設定';
+  const closeBtn = mk('button', 'ytl-icon-btn ytl-close', '✕');
   closeBtn.title = '閉じる';
   closeBtn.addEventListener('click', () => {
+    panel._abortListeners?.abort();
     panel.remove();
     clearInterval(syncTimer);
     tapSyncMode = false;
     if (focusMode) { focusMode = false; document.querySelector('ytd-watch-flexy')?.classList.remove('ytl-focus'); }
   });
-  const searchBtn = mk('button', 'ytl-search-btn', '🔍');
-  searchBtn.title = '手動で曲を検索';
-  header.append(mk('span', 'ytl-icon', '♪'), mk('span', 'ytl-title', '歌詞'), mk('span', 'ytl-source', ''), focusBtn, reloadBtn, rubyBtn, fontDecBtn, fontIncBtn, searchBtn, closeBtn);
+  headerActions.append(settingsBtn, closeBtn);
 
-  // オフセットバー（タップ同期 + 微調整 0.1）
+  header.append(titleBlock, headerActions);
+
+  // ── 別候補ピッカー（ピルクリックで展開） ──
+  const altPicker = mk('div', 'ytl-alt-picker');
+  altPicker.style.display = 'none';
+
+  // ── 手動検索バー（ドロワー or ピッカーから起動） ──
+  const searchBar = mk('div', 'ytl-search-bar');
+  searchBar.style.display = 'none';
+  const searchRow = mk('div', 'ytl-search-row');
+  const searchInput = document.createElement('input');
+  searchInput.className = 'ytl-search-input';
+  searchInput.type = 'text';
+  searchInput.placeholder = '曲名 アーティスト名で検索...';
+  const searchGoBtn = mk('button', 'ytl-search-go', '検索');
+  searchRow.append(searchInput, searchGoBtn);
+  const searchResultsEl = mk('div', 'ytl-search-results');
+  searchBar.append(searchRow, searchResultsEl);
+  const doSearch = () => performManualSearch(panel, searchInput.value.trim());
+  searchGoBtn.addEventListener('click', doSearch);
+  searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+  // ── オフセット/タップ同期バー ──
   const offsetBar = mk('div', 'ytl-offset-bar');
 
-  // タップ同期ボタン（メインアクション・大きく目立つ）
   const tapSyncBtn = mk('button', 'ytl-tapsync-btn', '');
   const tapSyncIcon = mk('span', 'ytl-tapsync-icon', '🎯');
   const tapSyncLabel = mk('span', 'ytl-tapsync-label', 'タップして歌詞を合わせる');
@@ -752,7 +762,6 @@ function createPanel() {
     tapSyncLabel.textContent = tapSyncMode ? '動画を歌い出しに合わせて歌詞行をクリック…' : 'タップして歌詞を合わせる';
   });
 
-  // オフセット表示 + 微調整 0.1
   const offsetMicroRow = mk('div', 'ytl-offset-micro-row');
   const offsetLabel = mk('span', 'ytl-offset-label', 'オフセット: 0.0s');
   offsetLabel.id = 'ytl-offset-label';
@@ -774,35 +783,261 @@ function createPanel() {
 
   offsetBar.append(tapSyncBtn, offsetMicroRow);
 
-  // ボディ
+  // ── ボディ ──
   const body = mk('div', 'ytl-body');
   body.append(mk('div', 'ytl-status', '歌詞を読み込み中...'), mk('div', 'ytl-lines', ''));
 
-  // 手動検索バー（折りたたみ式）
-  const searchBar = mk('div', 'ytl-search-bar');
-  searchBar.style.display = 'none';
-  const searchRow = mk('div', 'ytl-search-row');
-  const searchInput = document.createElement('input');
-  searchInput.className = 'ytl-search-input';
-  searchInput.type = 'text';
-  searchInput.placeholder = '曲名 アーティスト名で検索...';
-  const searchGoBtn = mk('button', 'ytl-search-go', '検索');
-  searchRow.append(searchInput, searchGoBtn);
-  const searchResultsEl = mk('div', 'ytl-search-results');
-  searchBar.append(searchRow, searchResultsEl);
+  // ── フォントサイズ（localStorage 永続化） ──
+  let fontSize = parseInt(localStorage.getItem('ytl_fontsize')) || 15;
+  function applyFontSize() {
+    panel.style.setProperty('--ytl-font-size', `${fontSize}px`);
+    localStorage.setItem('ytl_fontsize', String(fontSize));
+  }
+  applyFontSize();
 
-  searchBtn.addEventListener('click', () => {
-    const visible = searchBar.style.display !== 'none';
-    searchBar.style.display = visible ? 'none' : '';
-    if (!visible) setTimeout(() => searchInput.focus(), 50);
+  // ── パネル内ハンドラ（ドロワーから呼ぶ） ──
+  panel._handlers = {
+    setFontSize: (size) => { fontSize = Math.max(10, Math.min(60, size)); applyFontSize(); },
+    getFontSize: () => fontSize,
+    setRuby: (on) => { rubyEnabled = on; localStorage.setItem('ytl_ruby', on ? '1' : '0'); refreshRuby(panel); },
+    getRuby: () => rubyEnabled,
+    setTheme: (name) => { panel.dataset.theme = name; localStorage.setItem('ytl_theme', name); },
+    setFocus: (on) => {
+      focusMode = on;
+      document.querySelector('ytd-watch-flexy')?.classList.toggle('ytl-focus', focusMode);
+      panel.classList.toggle('ytl-focus', focusMode);
+    },
+    getFocus: () => focusMode,
+    reload: () => {
+      const vid = new URLSearchParams(location.search).get('v');
+      if (vid) {
+        lyricsCache.delete(vid);
+        try { localStorage.removeItem(OFFSET_KEY_PREFIX + vid); } catch (_) {}
+      }
+      currentVideoId = null;
+      loadLyrics();
+    },
+    openSearch: () => {
+      searchBar.style.display = '';
+      altPicker.style.display = 'none';
+      drawer.classList.remove('open');
+      setTimeout(() => searchInput.focus(), 50);
+    },
+  };
+
+  // 起動時に保存済み rubyEnabled を反映
+  const savedRuby = localStorage.getItem('ytl_ruby');
+  if (savedRuby !== null) rubyEnabled = savedRuby === '1';
+
+  // ── 設定ドロワー ──
+  const drawer = buildSettingsDrawer(panel);
+
+  // ── イベント ──
+  confidence.addEventListener('click', (e) => {
+    e.stopPropagation();
+    altPicker.style.display = altPicker.style.display === 'none' ? '' : 'none';
+    drawer.classList.remove('open');
   });
 
-  const doSearch = () => performManualSearch(panel, searchInput.value.trim());
-  searchGoBtn.addEventListener('click', doSearch);
-  searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    drawer.classList.toggle('open');
+    altPicker.style.display = 'none';
+  });
 
-  panel.append(header, searchBar, offsetBar, body);
+  // パネル外クリックで閉じる（AbortControllerで panel 破棄時に解除）
+  const ac = new AbortController();
+  panel._abortListeners = ac;
+  document.addEventListener('click', (e) => {
+    if (!panel.contains(e.target)) {
+      drawer.classList.remove('open');
+      altPicker.style.display = 'none';
+    }
+  }, { capture: true, signal: ac.signal });
+
+  panel.append(header, altPicker, searchBar, offsetBar, body, drawer);
   return panel;
+}
+
+// ── 設定ドロワー構築 ──
+function buildSettingsDrawer(panel) {
+  const drawer = mk('div', 'ytl-drawer');
+
+  const drawerHeader = mk('div', 'ytl-drawer-header');
+  const drawerTitle = mk('span', 'ytl-drawer-title', '設定');
+  const drawerClose = mk('button', 'ytl-icon-btn', '✕');
+  drawerClose.addEventListener('click', () => drawer.classList.remove('open'));
+  drawerHeader.append(drawerTitle, drawerClose);
+  drawer.append(drawerHeader);
+
+  // 表示セクション
+  const dispSection = makeDrawerSection('表示');
+  dispSection.append(makeToggleRow('フリガナ', panel._handlers.getRuby(), (on) => panel._handlers.setRuby(on)));
+
+  const fontRow = makeRowLabel('文字サイズ');
+  const fontControls = mk('div', 'ytl-drawer-inline');
+  const fontMinus = mk('button', 'ytl-drawer-mini-btn', '小');
+  const fontPlus = mk('button', 'ytl-drawer-mini-btn', '大');
+  fontMinus.addEventListener('click', () => panel._handlers.setFontSize(panel._handlers.getFontSize() - 10));
+  fontPlus.addEventListener('click', () => panel._handlers.setFontSize(panel._handlers.getFontSize() + 10));
+  fontControls.append(fontMinus, fontPlus);
+  fontRow.append(fontControls);
+  dispSection.append(fontRow);
+
+  const themeRow = makeRowLabel('テーマ');
+  const themeSelect = document.createElement('select');
+  themeSelect.className = 'ytl-drawer-select';
+  const themes = [
+    { value: 'dark', label: 'Dark' },
+    { value: 'midnight', label: 'Midnight (OLED)' },
+    { value: 'light', label: 'Light' },
+    { value: 'sepia', label: 'Sepia' },
+  ];
+  const currentTheme = panel.dataset.theme || 'dark';
+  themes.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.value;
+    opt.textContent = t.label;
+    if (t.value === currentTheme) opt.selected = true;
+    themeSelect.appendChild(opt);
+  });
+  themeSelect.addEventListener('change', () => panel._handlers.setTheme(themeSelect.value));
+  themeRow.append(themeSelect);
+  dispSection.append(themeRow);
+
+  dispSection.append(makeToggleRow('フォーカスモード', panel._handlers.getFocus(), (on) => panel._handlers.setFocus(on)));
+  drawer.append(dispSection);
+
+  // 検索セクション
+  const searchSection = makeDrawerSection('検索');
+  const searchAction = mk('button', 'ytl-drawer-action', '🔍 手動で曲を検索');
+  searchAction.addEventListener('click', () => panel._handlers.openSearch());
+  searchSection.append(searchAction);
+  const reloadAction = mk('button', 'ytl-drawer-action', '↻ 歌詞を再読み込み');
+  reloadAction.addEventListener('click', () => { panel._handlers.reload(); drawer.classList.remove('open'); });
+  searchSection.append(reloadAction);
+  drawer.append(searchSection);
+
+  return drawer;
+}
+
+function makeDrawerSection(title) {
+  const section = mk('div', 'ytl-drawer-section');
+  section.append(mk('div', 'ytl-drawer-section-title', title));
+  return section;
+}
+
+function makeRowLabel(label) {
+  const row = mk('div', 'ytl-drawer-row');
+  row.append(mk('span', 'ytl-drawer-label', label));
+  return row;
+}
+
+function makeToggleRow(label, initialOn, onChange) {
+  const row = makeRowLabel(label);
+  const toggle = mk('button', 'ytl-drawer-toggle', initialOn ? 'ON' : 'OFF');
+  toggle.classList.toggle('active', !!initialOn);
+  toggle.addEventListener('click', () => {
+    const newState = !toggle.classList.contains('active');
+    toggle.classList.toggle('active', newState);
+    toggle.textContent = newState ? 'ON' : 'OFF';
+    onChange(newState);
+  });
+  row.append(toggle);
+  return row;
+}
+
+// ── 信頼度ピル & ヘッダー更新 ──
+function getConfLevel(c) {
+  if (c >= 5) return 'high';
+  if (c >= 3) return 'mid';
+  if (c >= 1) return 'low';
+  return 'verylow';
+}
+
+function formatConfStars(c) {
+  if (c >= 5) return '★★★';
+  if (c >= 3) return '★★';
+  if (c >= 1) return '★';
+  return '⚠';
+}
+
+function updateHeaderForHit(panel, hit) {
+  const titleEl = panel.querySelector('.ytl-title');
+  if (titleEl) {
+    const label = [hit.lrclibTrack, hit.lrclibArtist].filter(Boolean).join(' / ');
+    if (label) titleEl.textContent = label.length > 30 ? label.slice(0, 28) + '…' : label;
+  }
+  const pill = panel.querySelector('.ytl-confidence-pill');
+  if (pill) {
+    const conf = hit._confidence || 0;
+    const sourceLabel = hit.source === 'synced' ? '同期' : hit.source === 'plain' ? '時刻なし' : '';
+    pill.dataset.stars = formatConfStars(conf);
+    pill.dataset.source = sourceLabel;
+    pill.dataset.level = getConfLevel(conf);
+    pill.textContent = `${pill.dataset.stars} ${sourceLabel}`.trim();
+    pill.style.display = '';
+  }
+  updateAltPicker(panel, hit);
+}
+
+function updateAltPicker(panel, hit) {
+  const picker = panel.querySelector('.ytl-alt-picker');
+  if (!picker) return;
+  picker.textContent = '';
+
+  // 現在の選択
+  const cur = mk('div', 'ytl-alt-item ytl-alt-current');
+  cur.append(
+    mk('span', 'ytl-alt-check', '✓'),
+    mk('span', 'ytl-alt-name', `${hit.lrclibTrack || '?'} / ${hit.lrclibArtist || '?'}`),
+    mk('span', `ytl-alt-conf level-${getConfLevel(hit._confidence || 0)}`, formatConfStars(hit._confidence || 0))
+  );
+  picker.appendChild(cur);
+
+  // 代替候補
+  const alts = hit._alternates || [];
+  alts.forEach(alt => {
+    const item = mk('div', 'ytl-alt-item');
+    item.append(
+      mk('span', 'ytl-alt-check', ''),
+      mk('span', 'ytl-alt-name', `${alt.lrclibTrack || '?'} / ${alt.lrclibArtist || '?'}`),
+      mk('span', `ytl-alt-conf level-${getConfLevel(alt._confidence || 0)}`, formatConfStars(alt._confidence || 0))
+    );
+    item.addEventListener('click', () => {
+      loadHitDirectly(panel, alt);
+      picker.style.display = 'none';
+    });
+    picker.appendChild(item);
+  });
+
+  // セパレータ + 検索アクション
+  picker.appendChild(mk('div', 'ytl-alt-sep'));
+  const searchAction = mk('button', 'ytl-alt-action', '🔍 別の曲を検索...');
+  searchAction.addEventListener('click', () => {
+    picker.style.display = 'none';
+    panel._handlers.openSearch();
+  });
+  picker.appendChild(searchAction);
+}
+
+// 代替候補（既に hit形式）を直接ロード
+function loadHitDirectly(panel, hit) {
+  const videoId = new URLSearchParams(location.search).get('v');
+  clearInterval(syncTimer);
+  lrcLines = [];
+  window.__ytlOffset = 0;
+  if (videoId) { try { localStorage.removeItem(OFFSET_KEY_PREFIX + videoId); } catch (_) {} }
+  const lbl = panel.querySelector('.ytl-offset-label');
+  if (lbl) lbl.textContent = 'オフセット: 0.0s';
+  if (videoId) { lyricsCache.set(videoId, hit); saveCache(); }
+  updateHeaderForHit(panel, hit);
+  if (hit.lrc) {
+    const parsed = parseLrc(hit.lrc);
+    if (parsed.length > 0) { renderSyncedLyrics(panel, parsed); return; }
+  }
+  if (hit.plain) { renderPlainLyrics(panel, hit.plain); return; }
+  setStatus(panel, '歌詞データなし');
 }
 
 function injectPanel(panel) {
@@ -818,11 +1053,21 @@ function setStatus(panel, msg) {
   panel.querySelector('.ytl-lines').textContent = '';
 }
 
+// setSource は信頼度ピル内の「source」表示部分を更新（旧 .ytl-source 互換）
 function setSource(panel, source) {
-  const el = panel.querySelector('.ytl-source');
-  if (source === 'synced') { el.textContent = '同期あり'; el.className = 'ytl-source synced'; }
-  else if (source === 'plain') { el.textContent = '時刻なし'; el.className = 'ytl-source plain'; }
-  else { el.textContent = ''; el.className = 'ytl-source'; }
+  const pill = panel.querySelector('.ytl-confidence-pill');
+  if (!pill) return;
+  if (source === null) {
+    pill.dataset.source = '';
+    pill.dataset.stars = '';
+    delete pill.dataset.level;
+    pill.textContent = '';
+    pill.style.display = 'none';
+    return;
+  }
+  pill.dataset.source = source === 'synced' ? '同期' : source === 'plain' ? '時刻なし' : '';
+  pill.textContent = `${pill.dataset.stars || ''} ${pill.dataset.source}`.trim();
+  if (pill.dataset.stars || pill.dataset.source) pill.style.display = '';
 }
 
 // ── 歌詞レンダリング ───────────────────────────────────────────
@@ -968,7 +1213,8 @@ async function loadLyrics() {
     }
   }
 
-  setSource(panel, result.source);
+  // ヘッダー更新（タイトル / 信頼度ピル / 別候補ピッカー を一括）
+  updateHeaderForHit(panel, result);
   if (result.lrc) {
     const parsed = parseLrc(result.lrc);
     if (parsed.length > 0) {
@@ -1311,19 +1557,8 @@ async function performManualSearch(panel, query) {
 }
 
 function loadManualResult(panel, item) {
-  const videoId = new URLSearchParams(location.search).get('v');
-
   const searchBar = panel.querySelector('.ytl-search-bar');
   if (searchBar) searchBar.style.display = 'none';
-
-  clearInterval(syncTimer);
-  lrcLines = [];
-
-  // 別曲を手動選択した場合は前曲の自動補正値を破棄
-  window.__ytlOffset = 0;
-  if (videoId) { try { localStorage.removeItem(OFFSET_KEY_PREFIX + videoId); } catch (_) {} }
-  const lbl = panel.querySelector('.ytl-offset-label');
-  if (lbl) lbl.textContent = 'オフセット: 0.0s';
 
   const hit = {
     lrc: item.syncedLyrics || null,
@@ -1332,22 +1567,10 @@ function loadManualResult(panel, item) {
     lrclibTrack: item.trackName || '',
     lrclibArtist: item.artistName || '',
     lrclibDuration: item.duration,
+    _confidence: 5, // 手動選択は確信扱い
+    _alternates: [],
   };
-
-  if (videoId) { lyricsCache.set(videoId, hit); saveCache(); }
-
-  const label = [hit.lrclibTrack, hit.lrclibArtist].filter(Boolean).join(' / ');
-  const titleEl = panel.querySelector('.ytl-title');
-  if (titleEl && label) titleEl.textContent = label.length > 30 ? label.slice(0, 28) + '…' : label;
-
-  setSource(panel, hit.source);
-
-  if (hit.lrc) {
-    const parsed = parseLrc(hit.lrc);
-    if (parsed.length > 0) { renderSyncedLyrics(panel, parsed); return; }
-  }
-  if (hit.plain) { renderPlainLyrics(panel, hit.plain); return; }
-  setStatus(panel, '歌詞データなし');
+  loadHitDirectly(panel, hit);
 }
 
 // ── YouTube SPA のナビゲーション監視（MutationObserver で即時検知）──
@@ -1367,7 +1590,9 @@ function setupNavigationObserver() {
         clearInterval(syncTimer);
         lrcLines = []; currentVideoId = null; focusMode = false; tapSyncMode = false; window.__ytlOffset = 0;
         flexy.classList.remove('ytl-focus');
-        document.getElementById(PANEL_ID)?.remove();
+        const oldPanel = document.getElementById(PANEL_ID);
+        oldPanel?._abortListeners?.abort();
+        oldPanel?.remove();
       }
     }
   });
