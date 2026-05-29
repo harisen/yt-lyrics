@@ -87,14 +87,102 @@ function getVideoInfo() {
   };
 }
 
+// ── ヘルパー：概要欄から「本家／原曲」のアーティストを抽出 ──
+function extractOriginalFromDescription(description) {
+  if (!description) return null;
+  const patterns = [
+    /(?:^|\n)\s*[【\[]?\s*(?:本家(?:様)?|原曲|Original|楽曲(?:提供)?|作詞作曲|作曲|原作(?:者)?|music|composer)\s*[】\]]?\s*[:：]\s*([^\n]+)/i,
+    /(?:本家|原曲|original)(?:様)?\s*[:：]\s*([^\n]+)/i,
+  ];
+  for (const pat of patterns) {
+    const m = description.match(pat);
+    if (m) {
+      let text = m[1]
+        .replace(/https?:\/\/\S+/g, '')
+        .replace(/[\(（].*?[\)）]/g, '')
+        .replace(/\s+\/\s+.+$/, '')
+        .replace(/\s+(?:feat\.?|ft\.?|with)\s+.+/i, '')
+        .trim()
+        .slice(0, 50);
+      if (text.length >= 1) return text;
+    }
+  }
+  return null;
+}
+
+// ── ヘルパー：クエリ正規化 (NFKC + 小文字 + 空白統一) ──
+function normalizeQuery(q) {
+  return (q || '').normalize('NFKC').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+// ── ヘルパー：カタカナ/ひらがな → ローマ字 (Hepburn) ──
+const KATAKANA_TO_ROMAJI = {
+  'ア':'a','イ':'i','ウ':'u','エ':'e','オ':'o',
+  'カ':'ka','キ':'ki','ク':'ku','ケ':'ke','コ':'ko',
+  'サ':'sa','シ':'shi','ス':'su','セ':'se','ソ':'so',
+  'タ':'ta','チ':'chi','ツ':'tsu','テ':'te','ト':'to',
+  'ナ':'na','ニ':'ni','ヌ':'nu','ネ':'ne','ノ':'no',
+  'ハ':'ha','ヒ':'hi','フ':'fu','ヘ':'he','ホ':'ho',
+  'マ':'ma','ミ':'mi','ム':'mu','メ':'me','モ':'mo',
+  'ヤ':'ya','ユ':'yu','ヨ':'yo',
+  'ラ':'ra','リ':'ri','ル':'ru','レ':'re','ロ':'ro',
+  'ワ':'wa','ヲ':'wo','ン':'n',
+  'ガ':'ga','ギ':'gi','グ':'gu','ゲ':'ge','ゴ':'go',
+  'ザ':'za','ジ':'ji','ズ':'zu','ゼ':'ze','ゾ':'zo',
+  'ダ':'da','ヂ':'ji','ヅ':'zu','デ':'de','ド':'do',
+  'バ':'ba','ビ':'bi','ブ':'bu','ベ':'be','ボ':'bo',
+  'パ':'pa','ピ':'pi','プ':'pu','ペ':'pe','ポ':'po',
+  'ァ':'a','ィ':'i','ゥ':'u','ェ':'e','ォ':'o',
+  'ャ':'ya','ュ':'yu','ョ':'yo','ッ':'',
+  'ー':'','ヴ':'vu',
+};
+
+function toRomaji(text) {
+  if (!text) return '';
+  // ひらがな → カタカナ
+  const kata = text.replace(/[ぁ-ん]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+  let result = '';
+  for (let i = 0; i < kata.length; i++) {
+    const c = kata[i];
+    const next = kata[i+1];
+    // 拗音 (キャ・シュ・ジョ等)
+    if (next && /[ャュョ]/.test(next)) {
+      const base = KATAKANA_TO_ROMAJI[c];
+      const yo = KATAKANA_TO_ROMAJI[next];
+      if (base && yo && base.endsWith('i') && base.length > 1) {
+        result += base.slice(0, -1) + yo;
+        i++; continue;
+      }
+    }
+    // 促音 (ッ)
+    if (c === 'ッ' && next) {
+      const nextRomaji = KATAKANA_TO_ROMAJI[next];
+      if (nextRomaji && /^[a-z]/.test(nextRomaji)) {
+        result += nextRomaji[0];
+        continue;
+      }
+    }
+    const romaji = KATAKANA_TO_ROMAJI[c];
+    if (romaji !== undefined) {
+      result += romaji;
+    } else if (/[a-zA-Z0-9]/.test(c)) {
+      result += c.toLowerCase();
+    }
+  }
+  return result.toLowerCase();
+}
+
 // ── タイトル/概要欄から検索候補を生成（信頼度スコア付き）──────
-// 戻り値: [{ trackName, artistName, confidence: 1-5 }, ...]
-//   5 = 確信（説明欄明示クレジット）
+// 戻り値: [{ trackName, artistName, confidence: 1-5, isCover: bool }, ...]
+//   5 = 確信（説明欄明示クレジット / カバー曲名）
 //   4 = 高（「」鉤括弧 or 区切り+チャンネル名一致）
 //   3 = 中高（区切りで一方向のみチャンネル一致）
 //   2 = 中（区切りあり・方向不明）
 //   1 = 低（フォールバック）
+//   isCover = カバー曲（歌ってみた等）→ scoreHit で artist 不一致ペナルティ無効化
 function buildSearchCandidates(rawTitle, channelArtist, description = '') {
+  // ── カバー検出（歌ってみた、cover、カバー等）──
+  const isCoverVideo = /歌(?:って|わせて(?:いただ|頂))(?:\s|み|きました|いた|い)|歌った|cover|カバー|covered\s+by|弾いてみた|演奏してみた|piano\s+cover|acoustic\s+cover/i.test(rawTitle);
   // ── チャンネル名の正規化（公式/Records/Music 等を除去 + 区切り分割）──
   const ch = channelArtist.replace(/\s*[-–—]\s*Topic$/i, '').trim();
 
@@ -113,6 +201,8 @@ function buildSearchCandidates(rawTitle, channelArtist, description = '') {
     .replace(/\s*[(\[（【〔〈《「『][^)\]）】〕〉》」』]*[)\]）】〕〉》」』]\s*/g, ' ')
     .replace(/\s*[-–—]\s*(?:official\s+(?:music\s+video|lyric\s+video|mv|pv|audio|video)|music\s+video|lyric\s+video|mv|pv|audio|video)(?:\s|$)/gi, ' ')
     .replace(/\s+(?:official\s+(?:music\s+video|lyric\s+video|mv|pv|audio|video)|music\s+video|lyric\s+video|official|mv|pv)\s*/gi, ' ')
+    // カバー系キーワード除去
+    .replace(/\s*(?:歌(?:って|わせて(?:いただ|頂))(?:いた|きました|み|い)?(?:た|ました)?|歌った|cover(?:ed\s+by)?|カバー|弾いてみた|演奏してみた|piano\s+cover|acoustic\s+cover)\s*/gi, ' ')
     .replace(/^[A-Z]?\d+[.\s]+/, '')
     .replace(/\s*[-–—|｜\/／]\s*$/, '')
     .replace(/\s+/g, ' ').trim();
@@ -134,18 +224,18 @@ function buildSearchCandidates(rawTitle, channelArtist, description = '') {
   // ── 候補リスト（信頼度マップ）──
   const candidates = [];
   const seen = new Map();
-  const add = (track, artist, conf = 2) => {
+  const add = (track, artist, conf = 2, isCover = false) => {
     track = (track || '').trim();
     artist = (artist || '').trim();
     if (!track || track === artist) return;
     if (/^(?:mv|pv|music\s*video|official|audio|lyric\s*video)$/i.test(track)) return;
-    const key = `${track.toLowerCase()}|${artist.toLowerCase()}`;
+    const key = `${track.toLowerCase()}|${artist.toLowerCase()}|${isCover ? 'c' : ''}`;
     if (seen.has(key)) {
       const existing = seen.get(key);
       if (conf > existing.confidence) existing.confidence = conf;
       return;
     }
-    const entry = { trackName: track, artistName: artist, confidence: conf };
+    const entry = { trackName: track, artistName: artist, confidence: conf, isCover };
     seen.set(key, entry);
     candidates.push(entry);
   };
@@ -254,8 +344,28 @@ function buildSearchCandidates(rawTitle, channelArtist, description = '') {
     }
   }
 
-  // ── 信頼度順にソート ──
-  candidates.sort((a, b) => b.confidence - a.confidence);
+  // ── H: カバー対応（歌ってみた・cover 等）──
+  if (isCoverVideo) {
+    const uniqueTracks = [...new Set(candidates.map(c => c.trackName))].filter(t => t && t.length >= 2);
+    // 説明欄から「本家」「原曲」を抽出
+    const originalArtist = extractOriginalFromDescription(description);
+    if (originalArtist) {
+      // 本家アーティスト判明 → 最高信頼度
+      for (const t of uniqueTracks.slice(0, 3)) {
+        add(t, originalArtist, 5, false); // 本家分かるので isCover=false (artist match できる)
+      }
+    }
+    // 本家不明 or 補助として、artist 不問の cover候補も追加
+    for (const t of uniqueTracks.slice(0, 3)) {
+      add(t, '', 5, true); // isCover=true → artist mismatch penalty 無効
+    }
+  }
+
+  // ── 信頼度順にソート（同点は isCover が後ろ：本家明示候補を優先）──
+  candidates.sort((a, b) => {
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    return (a.isCover ? 1 : 0) - (b.isCover ? 1 : 0);
+  });
   return candidates;
 }
 
@@ -283,7 +393,7 @@ async function fetchLyrics(title, artist, duration, description = '') {
   function scoreHit(hit, exp) {
     if (!hit) return -100;
     let score = 0;
-    const n = s => (s || '').toLowerCase().replace(/[\s\-_]/g, '');
+    const n = s => (s || '').normalize('NFKC').toLowerCase().replace(/[\s\-_]/g, '');
 
     // Track 一致度
     const eT = n(exp.trackName), hT = n(hit.lrclibTrack);
@@ -301,30 +411,46 @@ async function fetchLyrics(title, artist, duration, description = '') {
     }
 
     // Artist 一致度（チャンネル名分割含めて多角的に照合）
+    // カバー曲は artist mismatch ペナルティを無効化（cover artist != original artist のため）
     const ch = (artist || '').replace(/\s*[-–—]\s*Topic$/i, '').trim();
     const cnNorm = n(ch);
     const chParts = cnNorm.split(/[\/／\|｜　]+/).filter(Boolean);
     const eA = n(exp.artistName);
     const hA = n(hit.lrclibArtist);
     if (hA) {
-      let best = -1.5; // アーティスト不一致デフォルトでペナルティ
-      for (const c of [eA, cnNorm, ...chParts].filter(Boolean)) {
+      let best = exp.isCover ? 0 : -1.5;
+      const candArtists = [eA, cnNorm, ...chParts].filter(Boolean);
+      for (const c of candArtists) {
         if (hA === c) { best = Math.max(best, 3); continue; }
         if (c.length >= 3) {
           if (hA.includes(c) && c.length >= hA.length * 0.4) best = Math.max(best, 2);
           else if (hA.length >= 3 && c.includes(hA) && hA.length >= c.length * 0.4) best = Math.max(best, 2);
         }
       }
+      // ローマ字↔仮名 相互照合（一致しなかった場合のフォールバック）
+      if (best < 2 && !exp.isCover) {
+        const hAr = toRomaji(hA);
+        if (hAr && hAr.length >= 3) {
+          for (const c of candArtists) {
+            const cr = toRomaji(c);
+            if (cr && cr.length >= 3) {
+              if (hAr === cr) { best = Math.max(best, 2.5); break; }
+              if (hAr.includes(cr) && cr.length >= hAr.length * 0.5) best = Math.max(best, 1.5);
+              else if (cr.includes(hAr) && hAr.length >= cr.length * 0.5) best = Math.max(best, 1.5);
+            }
+          }
+        }
+      }
       score += best;
     }
 
-    // Duration 照合（version 違いの検出）
+    // Duration 照合（動画長との比率で評価）
     if (hit.lrclibDuration && duration > 0) {
-      const diff = Math.abs(hit.lrclibDuration - duration);
-      if (diff < 5) score += 1.5;
-      else if (diff < 15) score += 0.5;
-      else if (diff > 60) score -= 1;
-      else if (diff > 30) score -= 0.3;
+      const ratio = Math.abs(hit.lrclibDuration - duration) / duration;
+      if (ratio < 0.02) score += 1.5;       // 2%以内
+      else if (ratio < 0.05) score += 0.5;  // 5%以内
+      else if (ratio > 0.25) score -= 1;    // 25%超: 別version疑い
+      else if (ratio > 0.12) score -= 0.3;
     }
 
     // synced 優先
@@ -333,8 +459,18 @@ async function fetchLyrics(title, artist, duration, description = '') {
   }
 
   const candidates = buildSearchCandidates(title, artist, description);
-  console.log('[YTL] 検索候補:', candidates.map((c, i) => `${i+1}. [c${c.confidence}] "${c.trackName}" / "${c.artistName}"`).join('\n'));
+  console.log('[YTL] 検索候補:', candidates.map((c, i) => `${i+1}. [c${c.confidence}${c.isCover ? '/cover' : ''}] "${c.trackName}" / "${c.artistName}"`).join('\n'));
   if (!candidates.length) return null;
+
+  // ── クロスビデオキャッシュ: 同じ曲の別動画で再フェッチ防止 ──
+  for (const c of candidates) {
+    if (c.confidence < 4) break; // 高信頼度のみ
+    const cached = lookupCachedByTrackArtist(c.trackName, c.artistName);
+    if (cached) {
+      console.log(`[YTL] クロスビデオキャッシュHIT: "${cached.lrclibTrack}" / "${cached.lrclibArtist}"`);
+      return cached;
+    }
+  }
 
   // ── API呼び出しを最小化する仕組み ──
   const triedGet = new Set();
@@ -345,25 +481,35 @@ async function fetchLyrics(title, artist, duration, description = '') {
   const callGet = async (track, art, useDur) => {
     const params = new URLSearchParams({ track_name: track, artist_name: art });
     if (useDur && duration > 0) params.set('duration', Math.round(duration));
-    const key = params.toString();
+    const key = normalizeQuery(params.toString());
     if (triedGet.has(key)) return null;
+    if (negCache.has(`g:${key}`)) { console.log(`[YTL] negCache skip /get`); return null; }
     triedGet.add(key);
     apiCalls++;
     try {
       const r = await fetch(`${LRCLIB_BASE}/get?${params}`).catch(() => null);
-      if (r?.ok) return extract(await r.json().catch(() => null));
+      if (r?.ok) {
+        const data = await r.json().catch(() => null);
+        const hit = extract(data);
+        if (!hit) { negCache.add(`g:${key}`); saveNegCache(); }
+        return hit;
+      }
+      if (r?.status === 404) { negCache.add(`g:${key}`); saveNegCache(); }
     } catch (_) {}
     return null;
   };
 
   const callSearch = async (q) => {
-    if (!q || triedSearch.has(q)) return [];
-    triedSearch.add(q);
+    const key = normalizeQuery(q);
+    if (!key || triedSearch.has(key)) return [];
+    if (negCache.has(`s:${key}`)) { console.log(`[YTL] negCache skip /search "${q}"`); return []; }
+    triedSearch.add(key);
     apiCalls++;
     try {
       const r = await fetch(`${LRCLIB_BASE}/search?q=${encodeURIComponent(q)}`).catch(() => null);
       if (r?.ok) {
         const results = await r.json().catch(() => []);
+        if (results.length === 0) { negCache.add(`s:${key}`); saveNegCache(); }
         return results.slice(0, 5).map(extract).filter(Boolean);
       }
     } catch (_) {}
@@ -476,7 +622,7 @@ async function fetchLyrics(title, artist, duration, description = '') {
 const lyricsCache = new Map(); // videoId → result | null（フェッチ中）
 const CACHE_KEY = 'ytl_lyrics_cache';
 const CACHE_VER_KEY = 'ytl_cache_ver';
-const CACHE_VERSION = '9'; // hit object に _confidence / _alternates が追加されたためバンプ
+const CACHE_VERSION = '10'; // candidate.isCover 対応、scoreHit ロジック変更
 
 // ── キャッシュサイズ管理 ─────────────────────────────────────
 const CACHE_MAX_ENTRIES = 50; // LRU 上限（sessionStorage 5MB 制限対応）
@@ -544,6 +690,7 @@ function loadCache() {
   try {
     if (sessionStorage.getItem(CACHE_VER_KEY) !== CACHE_VERSION) {
       sessionStorage.removeItem(CACHE_KEY);
+      sessionStorage.removeItem(NEG_CACHE_KEY);
       sessionStorage.setItem(CACHE_VER_KEY, CACHE_VERSION);
       return;
     }
@@ -552,6 +699,47 @@ function loadCache() {
     const obj = JSON.parse(raw);
     Object.entries(obj).forEach(([k, v]) => lyricsCache.set(k, v));
   } catch (_) {}
+}
+
+// ── 永続的負キャッシュ（lrclib 未収録曲・空結果のリトライ防止） ──
+const NEG_CACHE_KEY = 'ytl_neg_cache';
+const NEG_CACHE_MAX = 500;
+const negCache = new Set();
+try {
+  const raw = sessionStorage.getItem(NEG_CACHE_KEY);
+  if (raw) JSON.parse(raw).forEach(q => negCache.add(q));
+} catch (_) {}
+
+let negCacheSaveTimer = null;
+function saveNegCache() {
+  if (negCacheSaveTimer) clearTimeout(negCacheSaveTimer);
+  negCacheSaveTimer = setTimeout(() => {
+    try {
+      // LRU like eviction
+      let arr = [...negCache];
+      if (arr.length > NEG_CACHE_MAX) arr = arr.slice(-NEG_CACHE_MAX);
+      sessionStorage.setItem(NEG_CACHE_KEY, JSON.stringify(arr));
+    } catch (_) {}
+  }, 1000);
+}
+
+// ── クロスビデオキャッシュ: 同じ曲を別動画で再フェッチしないための索引 ──
+function lookupCachedByTrackArtist(trackName, artistName) {
+  if (!trackName || trackName.length < 2) return null;
+  const tk = trackName.normalize('NFKC').toLowerCase().trim();
+  const ak = (artistName || '').normalize('NFKC').toLowerCase().trim();
+  for (const hit of lyricsCache.values()) {
+    if (!hit?.lrclibTrack) continue;
+    const ht = hit.lrclibTrack.normalize('NFKC').toLowerCase().trim();
+    if (ht !== tk) continue;
+    if (ak) {
+      const ha = (hit.lrclibArtist || '').normalize('NFKC').toLowerCase().trim();
+      if (ha !== ak) continue;
+    }
+    // lrc/plain が cache 剥がしされていないか確認（lyricsCache の hit は本体）
+    if (hit.lrc || hit.plain) return hit;
+  }
+  return null;
 }
 
 loadCache(); // 起動時に復元（page-bridge.js は manifest で MAIN world から別途実行済み）
