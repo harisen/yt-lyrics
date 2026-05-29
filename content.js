@@ -478,12 +478,66 @@ const CACHE_KEY = 'ytl_lyrics_cache';
 const CACHE_VER_KEY = 'ytl_cache_ver';
 const CACHE_VERSION = '9'; // hit object に _confidence / _alternates が追加されたためバンプ
 
+// ── キャッシュサイズ管理 ─────────────────────────────────────
+const CACHE_MAX_ENTRIES = 50; // LRU 上限（sessionStorage 5MB 制限対応）
+const CACHE_SAVE_DEBOUNCE_MS = 1000;
+
+// 保存用に hit を軽量化（_alternates から lrc/plain を剥がす）
+function strippedForCache(hit) {
+  if (!hit || typeof hit !== 'object') return hit;
+  const copy = { ...hit };
+  if (Array.isArray(copy._alternates)) {
+    copy._alternates = copy._alternates.map(a => ({
+      lrclibTrack: a.lrclibTrack,
+      lrclibArtist: a.lrclibArtist,
+      lrclibDuration: a.lrclibDuration,
+      source: a.source,
+      _confidence: a._confidence,
+      // lrc/plain は保存しない（クリック時に再フェッチ）
+    }));
+  }
+  return copy;
+}
+
+// LRU eviction（古いエントリから削除）
+function evictIfNeeded() {
+  while (lyricsCache.size > CACHE_MAX_ENTRIES) {
+    const oldestKey = lyricsCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    lyricsCache.delete(oldestKey);
+  }
+}
+
+let saveCacheTimer = null;
 function saveCache() {
-  try {
+  // デバウンス: 連続呼び出しを1秒にまとめる
+  if (saveCacheTimer) clearTimeout(saveCacheTimer);
+  saveCacheTimer = setTimeout(saveCacheNow, CACHE_SAVE_DEBOUNCE_MS);
+}
+
+function saveCacheNow() {
+  saveCacheTimer = null;
+  evictIfNeeded();
+  const buildObj = () => {
     const obj = {};
-    lyricsCache.forEach((v, k) => { if (v) obj[k] = v; });
-    sessionStorage.setItem(CACHE_KEY, JSON.stringify(obj));
-  } catch (_) {}
+    lyricsCache.forEach((v, k) => { if (v) obj[k] = strippedForCache(v); });
+    return obj;
+  };
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify(buildObj()));
+  } catch (e) {
+    // 容量超過 → 古いエントリ半分削除してリトライ
+    if (e && (e.name === 'QuotaExceededError' || e.code === 22)) {
+      console.log('[YTL] cache QuotaExceeded → 半分evict');
+      const keys = [...lyricsCache.keys()];
+      keys.slice(0, Math.floor(keys.length / 2)).forEach(k => lyricsCache.delete(k));
+      try {
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify(buildObj()));
+      } catch (_) {
+        try { sessionStorage.removeItem(CACHE_KEY); } catch (_) {}
+      }
+    }
+  }
 }
 
 function loadCache() {
@@ -1021,8 +1075,24 @@ function updateAltPicker(panel, hit) {
   picker.appendChild(searchAction);
 }
 
+// lrclib /get で単一 hit の歌詞本文だけ再取得（キャッシュから lrc 剥がされた alternate 用）
+async function fetchSingleHitBody(trackName, artistName, duration) {
+  if (!trackName || !artistName) return null;
+  const params = new URLSearchParams({ track_name: trackName, artist_name: artistName });
+  if (duration > 0) params.set('duration', Math.round(duration));
+  try {
+    const r = await fetch(`${LRCLIB_BASE}/get?${params}`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data?.syncedLyrics) return { lrc: data.syncedLyrics, source: 'synced' };
+      if (data?.plainLyrics) return { plain: data.plainLyrics, source: 'plain' };
+    }
+  } catch (_) {}
+  return null;
+}
+
 // 代替候補（既に hit形式）を直接ロード
-function loadHitDirectly(panel, hit) {
+async function loadHitDirectly(panel, hit) {
   const videoId = new URLSearchParams(location.search).get('v');
   clearInterval(syncTimer);
   lrcLines = [];
@@ -1030,8 +1100,21 @@ function loadHitDirectly(panel, hit) {
   if (videoId) { try { localStorage.removeItem(OFFSET_KEY_PREFIX + videoId); } catch (_) {} }
   const lbl = panel.querySelector('.ytl-offset-label');
   if (lbl) lbl.textContent = 'オフセット: 0.0s';
-  if (videoId) { lyricsCache.set(videoId, hit); saveCache(); }
   updateHeaderForHit(panel, hit);
+
+  // キャッシュから復元された alternate は lrc/plain が剥がれている → 再フェッチ
+  if (!hit.lrc && !hit.plain && hit.lrclibTrack) {
+    setStatus(panel, '歌詞を取得中...');
+    const fetched = await fetchSingleHitBody(hit.lrclibTrack, hit.lrclibArtist, hit.lrclibDuration);
+    if (fetched) {
+      hit.lrc = fetched.lrc;
+      hit.plain = fetched.plain;
+      if (!hit.source) hit.source = fetched.source;
+    }
+  }
+
+  if (videoId) { lyricsCache.set(videoId, hit); saveCache(); }
+
   if (hit.lrc) {
     const parsed = parseLrc(hit.lrc);
     if (parsed.length > 0) { renderSyncedLyrics(panel, parsed); return; }
@@ -1117,6 +1200,9 @@ function startSync(panel) {
   clearInterval(syncTimer);
   const video = document.querySelector('video.html5-main-video');
   if (!video || lrcLines.length === 0) return;
+  // 200msごとに querySelectorAll を実行しないようキャッシュ
+  const cachedLines = panel.querySelectorAll('.ytl-line');
+  const cachedBody = panel.querySelector('.ytl-body');
   let lastIndex = -1;
   syncTimer = setInterval(() => {
     // オフセット分を引いて lrclib の時刻軸に変換 (+0.3s 先読み)
@@ -1127,20 +1213,26 @@ function startSync(panel) {
       else break;
     }
     if (current === lastIndex) return;
+    // 変化したラインだけ class を切替（O(n) → O(差分)）
+    if (lastIndex >= 0 && cachedLines[lastIndex]) {
+      cachedLines[lastIndex].classList.remove('active');
+      if (current > lastIndex) cachedLines[lastIndex].classList.add('past');
+    }
+    if (current >= 0 && cachedLines[current]) {
+      cachedLines[current].classList.add('active');
+      cachedLines[current].classList.remove('past');
+    }
+    // シーク等で複数行飛んだ場合の past 補正
+    if (current > lastIndex + 1) {
+      for (let i = Math.max(0, lastIndex + 1); i < current; i++) cachedLines[i]?.classList.add('past');
+    } else if (current < lastIndex) {
+      for (let i = current + 1; i <= lastIndex; i++) cachedLines[i]?.classList.remove('past');
+    }
     lastIndex = current;
-    const allLines = panel.querySelectorAll('.ytl-line');
-    allLines.forEach((el, i) => {
-      el.classList.toggle('active', i === current);
-      el.classList.toggle('past', i < current);
-    });
-    if (current >= 0 && allLines[current]) {
-      // パネル本体（.ytl-body）内だけをスクロール（ページスクロールしない）
-      const body = panel.querySelector('.ytl-body');
-      const targetEl = allLines[current];
-      if (body && targetEl) {
-        const target = targetEl.offsetTop - body.clientHeight / 2 + targetEl.clientHeight / 2;
-        body.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-      }
+    if (current >= 0 && cachedLines[current] && cachedBody) {
+      const targetEl = cachedLines[current];
+      const target = targetEl.offsetTop - cachedBody.clientHeight / 2 + targetEl.clientHeight / 2;
+      cachedBody.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
     }
   }, 200);
 }
