@@ -98,10 +98,20 @@ function extractOriginalFromDescription(description) {
     const m = description.match(pat);
     if (m) {
       let text = m[1]
-        .replace(/https?:\/\/\S+/g, '')
-        .replace(/[\(（].*?[\)）]/g, '')
-        .replace(/\s+\/\s+.+$/, '')
-        .replace(/\s+(?:feat\.?|ft\.?|with)\s+.+/i, '')
+        .replace(/https?:\/\/\S+/g, '')         // URL除去
+        .replace(/[\(（].*?[\)）]/g, '')          // 括弧内除去
+        .replace(/^[\s•・\-‐−▶▷►▸→＞＞>＊\*※「『【\[·•]+/, '') // 先頭記号類
+        .trim();
+      // "曲名/アーティスト" や "曲名／アーティスト" → アーティスト部分（最後のスラッシュ以降）
+      const slashIdx = Math.max(text.lastIndexOf('/'), text.lastIndexOf('／'));
+      if (slashIdx > 0 && slashIdx < text.length - 1) {
+        const after = text.slice(slashIdx + 1).trim();
+        if (after.length >= 1) text = after;
+      }
+      // feat. を除去（空白の有無に関わらず）
+      text = text
+        .replace(/\s*[\(（]?\s*(?:feat\.?|ft\.?|with)\s*.+/i, '')
+        .replace(/^[\s•・\-‐−▶▷►▸→＞＞>＊\*※「『【\[·•]+/, '')
         .trim()
         .slice(0, 50);
       if (text.length >= 1) return text;
