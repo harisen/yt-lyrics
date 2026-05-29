@@ -794,12 +794,18 @@ function createPanel() {
   searchInput.type = 'text';
   searchInput.placeholder = '曲名 アーティスト名で検索...';
   const searchGoBtn = mk('button', 'ytl-search-go', '検索');
-  searchRow.append(searchInput, searchGoBtn);
+  const searchCloseBtn = mk('button', 'ytl-icon-btn ytl-search-close', '✕');
+  searchCloseBtn.title = '検索を閉じる';
+  searchCloseBtn.addEventListener('click', () => { searchBar.style.display = 'none'; });
+  searchRow.append(searchInput, searchGoBtn, searchCloseBtn);
   const searchResultsEl = mk('div', 'ytl-search-results');
   searchBar.append(searchRow, searchResultsEl);
   const doSearch = () => performManualSearch(panel, searchInput.value.trim());
   searchGoBtn.addEventListener('click', doSearch);
-  searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doSearch();
+    else if (e.key === 'Escape') { searchBar.style.display = 'none'; searchInput.blur(); }
+  });
 
   // ── オフセット/タップ同期バー ──
   const offsetBar = mk('div', 'ytl-offset-bar');
